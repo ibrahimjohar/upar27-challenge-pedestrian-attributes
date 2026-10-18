@@ -1,0 +1,395 @@
+"""UPAR 2027 Track 1 - train a pedestrian attribute classifier (crash-safe, resumable).
+
+    python src/train.py --data-root /tmp/data --backbone clip_vitb16 --epochs 10 --out /kaggle/working/run_clip
+
+Model
+  * pretrained backbone (timm) fine-tuned end to end, 40-logit head, input 256x128
+  * square-root dataset-balanced sampling (PA100k is 81% of train)
+  * weighted BCE (Li et al. 2015 weights from training positive rates)
+  * mild augmentation only: flip, small shift, brightness/contrast, small erasing
+    (no hue/saturation: colours are labels)
+  * AdamW + layer-wise lr decay, warmup + cosine, AMP, EMA of weights
+  * after every epoch: official-style leaderboard metrics on val (per dataset, averaged)
+  * at the end: best EMA model -> val logits (+flip TTA) -> per-attribute logit offsets
+    maximising Challenge_Avg -> results tables for the report
+
+Crash safety
+  * <out>/last.pth holds the FULL training state (model, EMA, optimizer, scheduler,
+    AMP scaler, RNG, epoch and step, best score). It is written atomically (tmp file +
+    rename) after every epoch and every --ckpt-every-min minutes inside an epoch.
+  * Re-running the same command resumes from <out>/last.pth automatically
+    (--resume auto). Training continues mid-epoch from the saved step.
+  * --time-budget-hours: stops cleanly (checkpoint + PAUSED file) before a platform
+    limit such as Kaggle's 12 h session cap. Re-run to continue.
+  * Finished runs write DONE; re-running a finished run only redoes the final analysis.
+"""
+from __future__ import annotations
+
+import argparse
+import copy
+import csv
+import json
+import math
+import os
+import random
+import sys
+import time
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+import torchvision.transforms as T
+
+from common import (ATTRIBUTES, NUM_ATTR, SCALAR_KEYS, calibrate_offsets, dataset_of,
+                    leaderboard_metrics, pedestrian_metrics, read_gt)
+
+H, W = 256, 128
+BACKBONES = {
+    # name: (timm model id, extra create kwargs)
+    "clip_vitb16": ("vit_base_patch16_clip_224.openai", {"img_size": (H, W)}),
+    "convnext_tiny": ("convnext_tiny.fb_in22k_ft_in1k", {}),
+    "convnext_small": ("convnext_small.fb_in22k_ft_in1k", {}),
+    "resnet50": ("resnet50.a1_in1k", {}),
+}
+
+
+# ----------------------------------------------------------------------------- data
+def load_rgb_resized(path: str) -> Image.Image:
+    """The ONE resize used in training, validation and the submission's run.py."""
+    with Image.open(path) as im:
+        return im.convert("RGB").resize((W, H), Image.BILINEAR)
+
+
+class UPARDataset(Dataset):
+    def __init__(self, root, paths, labels, transform):
+        self.root, self.paths, self.labels, self.transform = root, paths, labels, transform
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, i):
+        img = load_rgb_resized(os.path.join(self.root, self.paths[i]))
+        return self.transform(img), torch.from_numpy(self.labels[i].astype(np.float32))
+
+
+def make_transforms(mean, std, train: bool):
+    norm = [T.ToTensor(), T.Normalize(mean, std)]
+    if not train:
+        return T.Compose(norm)
+    return T.Compose([
+        T.RandomHorizontalFlip(),
+        T.Pad(10, padding_mode="edge"),
+        T.RandomCrop((H, W)),
+        T.ColorJitter(brightness=0.2, contrast=0.2),
+        *norm,
+        T.RandomErasing(p=0.3, scale=(0.02, 0.12), ratio=(0.3, 3.3), value=0),
+    ])
+
+
+def balanced_weights(paths, power: float):
+    """Per-sample weight n_dataset^-power. power=0.5 -> sqrt balancing, 1 -> equal datasets."""
+    ds = [dataset_of(p) for p in paths]
+    counts = {d: ds.count(d) for d in set(ds)}
+    return torch.tensor([counts[d] ** (-power) for d in ds], dtype=torch.double)
+
+
+# ----------------------------------------------------------------------------- model
+def build_model(backbone: str, pretrained: bool):
+    import timm
+    name, kw = BACKBONES.get(backbone, (backbone, {}))
+    model = timm.create_model(name, pretrained=pretrained, num_classes=NUM_ATTR, **kw)
+    cfg = model.pretrained_cfg
+    return model, tuple(cfg.get("mean", (0.485, 0.456, 0.406))), tuple(cfg.get("std", (0.229, 0.224, 0.225)))
+
+
+class WeightedBCE(nn.Module):
+    """Weighted sigmoid CE (Li et al., 2015): w_pos = exp(1-p), w_neg = exp(p)."""
+
+    def __init__(self, pos_rate: np.ndarray):
+        super().__init__()
+        p = torch.tensor(pos_rate, dtype=torch.float32).clamp(1e-4, 1 - 1e-4)
+        self.register_buffer("wp", torch.exp(1 - p))
+        self.register_buffer("wn", torch.exp(p))
+
+    def forward(self, logits, y):
+        w = y * self.wp + (1 - y) * self.wn
+        return F.binary_cross_entropy_with_logits(logits.float(), y, weight=w)
+
+
+class EMA:
+    def __init__(self, model, decay):
+        self.module = copy.deepcopy(model).eval()
+        self.decay = decay
+        for p in self.module.parameters():
+            p.requires_grad_(False)
+
+    @torch.no_grad()
+    def update(self, model):
+        msd = model.state_dict()
+        for k, v in self.module.state_dict().items():
+            if v.dtype.is_floating_point:
+                v.mul_(self.decay).add_(msd[k].detach(), alpha=1 - self.decay)
+            else:
+                v.copy_(msd[k])
+
+
+@torch.no_grad()
+def predict_logits(model, loader, device, flip_tta=False):
+    model.eval()
+    out = []
+    for x, _ in loader:
+        x = x.to(device, non_blocking=True)
+        with torch.autocast(device.type, enabled=device.type == "cuda"):
+            lg = model(x).float()
+            if flip_tta:
+                lg = (lg + model(torch.flip(x, dims=[3])).float()) / 2
+        out.append(lg.cpu())
+    return torch.cat(out).numpy()
+
+
+def atomic_save(obj, path):
+    tmp = path + ".tmp"
+    torch.save(obj, tmp)
+    os.replace(tmp, path)  # never leaves a half-written checkpoint behind
+
+
+def rng_state():
+    return {"py": random.getstate(), "np": np.random.get_state(), "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None}
+
+
+def set_rng_state(s):
+    random.setstate(s["py"]); np.random.set_state(s["np"]); torch.set_rng_state(s["torch"])
+    if s.get("cuda") is not None and torch.cuda.is_available() and len(s["cuda"]) == torch.cuda.device_count():
+        torch.cuda.set_rng_state_all(s["cuda"])
+
+
+# ----------------------------------------------------------------------------- main
+def main():
+    T0 = time.time()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data-root", required=True, help="folder holding Market1501/ PA100k/ PETA/")
+    ap.add_argument("--ann-root", default=None, help="folder holding task1/train/gt.csv (default: <data-root>/annotations)")
+    ap.add_argument("--backbone", default="clip_vitb16")
+    ap.add_argument("--no-pretrained", action="store_true")
+    ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--batch-size", type=int, default=64)
+    ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--layer-decay", type=float, default=0.65)
+    ap.add_argument("--weight-decay", type=float, default=0.05)
+    ap.add_argument("--warmup-epochs", type=float, default=1.0)
+    ap.add_argument("--ema-decay", type=float, default=0.9995)
+    ap.add_argument("--balance-power", type=float, default=0.5)
+    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--train-on-val", action="store_true", help="final model: train on train+val, no model selection")
+    ap.add_argument("--limit", type=int, default=0, help="debug: use only N train and N val images")
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--resume", default="auto", help="auto (use <out>/last.pth if present) | none | path")
+    ap.add_argument("--ckpt-every-min", type=float, default=20.0, help="mid-epoch checkpoint interval")
+    ap.add_argument("--time-budget-hours", type=float, default=0.0, help="pause cleanly after this long (0 = no limit)")
+    ap.add_argument("--out", required=True)
+    args = ap.parse_args()
+
+    os.makedirs(args.out, exist_ok=True)
+    if os.path.exists(os.path.join(args.out, "PAUSED")):
+        os.remove(os.path.join(args.out, "PAUSED"))
+    random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ann = args.ann_root or os.path.join(args.data_root, "annotations")
+
+    tr_paths, tr_y = read_gt(os.path.join(ann, "task1", "train", "gt.csv"))
+    va_paths, va_y = read_gt(os.path.join(ann, "task1", "val", "gt.csv"))
+    if args.limit:
+        rng = np.random.default_rng(0)
+        ti = rng.choice(len(tr_paths), min(args.limit, len(tr_paths)), replace=False)
+        vi = rng.choice(len(va_paths), min(args.limit, len(va_paths)), replace=False)
+        tr_paths, tr_y = [tr_paths[i] for i in ti], tr_y[ti]
+        va_paths, va_y = [va_paths[i] for i in vi], va_y[vi]
+    if args.train_on_val:
+        tr_paths, tr_y = tr_paths + va_paths, np.concatenate([tr_y, va_y])
+    va_ds = [dataset_of(p) for p in va_paths]
+    print(f"train {len(tr_paths)} | val {len(va_paths)} | device {device} x{torch.cuda.device_count()}", flush=True)
+
+    model, mean, std = build_model(args.backbone, not args.no_pretrained)
+    model.to(device)
+    criterion = WeightedBCE(tr_y.mean(0)).to(device)
+
+    train_set = UPARDataset(args.data_root, tr_paths, tr_y, make_transforms(mean, std, True))
+    val_set = UPARDataset(args.data_root, va_paths, va_y, make_transforms(mean, std, False))
+    sampler = WeightedRandomSampler(balanced_weights(tr_paths, args.balance_power), len(tr_paths), replacement=True)
+    tl = DataLoader(train_set, args.batch_size, sampler=sampler, num_workers=args.workers,
+                    pin_memory=True, drop_last=True, persistent_workers=args.workers > 0)
+    vl = DataLoader(val_set, args.batch_size * 2, shuffle=False, num_workers=args.workers, pin_memory=True)
+
+    from timm.optim import create_optimizer_v2
+    opt = create_optimizer_v2(model, "adamw", lr=args.lr, weight_decay=args.weight_decay,
+                              layer_decay=args.layer_decay)
+    for g in opt.param_groups:  # torch schedulers ignore timm's lr_scale -> bake it into lr
+        g["lr"] = args.lr * g.get("lr_scale", 1.0)
+        g["initial_lr"] = g["lr"]
+    steps = args.epochs * len(tl)
+    warm = int(args.warmup_epochs * len(tl))
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, lambda s: (s + 1) / max(1, warm) if s < warm else 0.5 * (1 + math.cos(math.pi * min(1.0, (s - warm) / max(1, steps - warm)))))
+    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
+    ema = EMA(model, args.ema_decay)
+    net = nn.DataParallel(model) if torch.cuda.device_count() > 1 else model
+
+    config = dict(vars(args), mean=mean, std=std, H=H, W=W, attributes=ATTRIBUTES)
+    json.dump(config, open(os.path.join(args.out, "config.json"), "w"), indent=1)
+
+    # ------------------------------------------------------------------ resume
+    last_path = os.path.join(args.out, "last.pth")
+    best_path = os.path.join(args.out, "best.pth")
+    resume_path = None
+    if args.resume == "auto":
+        resume_path = last_path if os.path.exists(last_path) else None
+    elif args.resume != "none":
+        resume_path = args.resume
+    epoch_done, steps_done, best, best_ep = 0, 0, -1.0, -1
+    ep_loss, ep_n = 0.0, 0
+    if resume_path:
+        st = torch.load(resume_path, map_location="cpu", weights_only=False)
+        if st["config"]["backbone"] != args.backbone or st["config"]["train_on_val"] != args.train_on_val:
+            sys.exit(f"{resume_path} was trained with different settings; use a new --out or --resume none")
+        if st["config"]["epochs"] != args.epochs:
+            print(f"note: epochs changed {st['config']['epochs']} -> {args.epochs}; lr schedule follows the new total")
+        model.load_state_dict(st["model"])
+        ema.module.load_state_dict(st["ema"])
+        opt.load_state_dict(st["opt"])
+        sched.load_state_dict(st["sched"])
+        scaler.load_state_dict(st["scaler"])
+        set_rng_state(st["rng"])
+        epoch_done, steps_done = st["epoch_done"], st["steps_done"]
+        best, best_ep = st["best"], st["best_ep"]
+        ep_loss, ep_n = st.get("ep_loss", 0.0), st.get("ep_n", 0)
+        print(f"RESUMED from {resume_path}: {epoch_done} epochs done, {steps_done}/{len(tl)} steps into epoch "
+              f"{epoch_done + 1}, best {best:.4f} (epoch {best_ep})", flush=True)
+
+    def save_state(e_done, s_done, loss_sum, n):
+        atomic_save({"model": model.state_dict(), "ema": ema.module.state_dict(), "opt": opt.state_dict(),
+                     "sched": sched.state_dict(), "scaler": scaler.state_dict(), "rng": rng_state(),
+                     "epoch_done": e_done, "steps_done": s_done, "best": best, "best_ep": best_ep,
+                     "ep_loss": loss_sum, "ep_n": n, "config": config, "epoch": e_done}, last_path)
+
+    hist_path = os.path.join(args.out, "history.csv")
+    new_hist = not os.path.exists(hist_path) or not resume_path
+    hist_f = open(hist_path, "w" if new_hist else "a", newline="")
+    hist = csv.writer(hist_f)
+    if new_hist:
+        hist.writerow(["epoch", "train_loss", "minutes"] + [f"val_{k}" for k in SCALAR_KEYS])
+
+    budget_s = args.time_budget_hours * 3600
+    last_ckpt = time.time()
+
+    # ------------------------------------------------------------------ train
+    for ep in range(epoch_done + 1, args.epochs + 1):
+        net.train()
+        t0 = time.time()
+        skip = steps_done if ep == epoch_done + 1 else 0
+        if skip == 0:
+            ep_loss, ep_n = 0.0, 0
+        loader_it = iter(tl)
+        for it in range(skip, len(tl)):
+            x, y = next(loader_it)
+            x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+            with torch.autocast(device.type, enabled=device.type == "cuda"):
+                loss = criterion(net(x), y)
+            opt.zero_grad(set_to_none=True)
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(opt); scaler.update(); sched.step()
+            ema.update(model)
+            ep_loss += loss.item(); ep_n += 1
+            if it % 200 == 0:
+                print(f"  ep{ep} it{it}/{len(tl)} loss {ep_loss / ep_n:.4f} "
+                      f"lr {max(g['lr'] for g in opt.param_groups):.2e}", flush=True)
+            if budget_s and time.time() - T0 > budget_s:
+                save_state(ep - 1, it + 1, ep_loss, ep_n)
+                open(os.path.join(args.out, "PAUSED"), "w").write(f"epoch {ep} step {it + 1}/{len(tl)}\n")
+                print(f"PAUSED (time budget {args.time_budget_hours} h) at epoch {ep} step {it + 1}/{len(tl)}. "
+                      f"Checkpoint saved; re-run the same command to continue.", flush=True)
+                hist_f.close()
+                return
+            if time.time() - last_ckpt > args.ckpt_every_min * 60:
+                save_state(ep - 1, it + 1, ep_loss, ep_n)
+                last_ckpt = time.time()
+        del loader_it
+        mins = (time.time() - t0) / 60
+        row = [ep, round(ep_loss / max(1, ep_n), 5), round(mins, 2)]
+        if not args.train_on_val:
+            lg = predict_logits(ema.module, vl, device)
+            m = leaderboard_metrics(va_y, lg > 0, va_ds)
+            row += [round(m[k], 5) for k in SCALAR_KEYS]
+            print(f"ep{ep} loss {ep_loss / max(1, ep_n):.4f} | {mins:.1f} min | val Challenge_Avg {m['Challenge_Avg']:.4f} "
+                  f"mA {m['mA']:.4f} InstF1 {m['Instance_F1']:.4f} | per-ds "
+                  + " ".join(f"{d}:{v['Challenge_Avg']:.3f}" for d, v in m["per_dataset"].items()), flush=True)
+            if m["Challenge_Avg"] > best:
+                best, best_ep = m["Challenge_Avg"], ep
+                atomic_save({"state_dict": ema.module.state_dict(), "config": config, "epoch": ep}, best_path)
+        else:
+            print(f"ep{ep} loss {ep_loss / max(1, ep_n):.4f} | {mins:.1f} min", flush=True)
+            atomic_save({"state_dict": ema.module.state_dict(), "config": config, "epoch": ep},
+                        os.path.join(args.out, "final.pth"))
+        hist.writerow(row); hist_f.flush()
+        save_state(ep, 0, 0.0, 0)
+        last_ckpt = time.time()
+    hist_f.close()
+
+    if args.train_on_val:
+        open(os.path.join(args.out, "DONE"), "w").write("train+val run finished\n")
+        print("DONE (train+val). Export final.pth with offsets.json from a train-only run.")
+        return
+
+    # ------------------------------------------------- final analysis on the best checkpoint
+    print(f"best epoch {best_ep}: val Challenge_Avg {best:.4f}", flush=True)
+    ck = torch.load(best_path, map_location=device, weights_only=False)
+    ema.module.load_state_dict(ck["state_dict"])
+    lg_plain = predict_logits(ema.module, vl, device)
+    lg_flip = predict_logits(ema.module, vl, device, flip_tta=True)
+    offsets, cal_log = calibrate_offsets(lg_flip, va_y, va_ds)
+    np.savez_compressed(os.path.join(args.out, "val_logits.npz"), logits=lg_flip, logits_plain=lg_plain,
+                        gt=va_y, paths=np.array(va_paths))
+    json.dump({"attributes": ATTRIBUTES, "offsets": offsets.tolist(), "log": cal_log},
+              open(os.path.join(args.out, "offsets.json"), "w"), indent=1)
+
+    variants = {
+        "plain @0.5": lg_plain > 0,
+        "flip-TTA @0.5": lg_flip > 0,
+        "flip-TTA + tuned offsets": (lg_flip + offsets) > 0,
+    }
+    summary = {}
+    with open(os.path.join(args.out, "results_summary.csv"), "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["variant", "exclude_absent"] + SCALAR_KEYS + [f"{d}_Challenge_Avg" for d in sorted(set(va_ds))])
+        for name, pred in variants.items():
+            for ex in (True, False):
+                m = leaderboard_metrics(va_y, pred, va_ds, ex)
+                w.writerow([name, ex] + [round(m[k], 4) for k in SCALAR_KEYS]
+                           + [round(m["per_dataset"][d]["Challenge_Avg"], 4) for d in sorted(m["per_dataset"])])
+                if ex:
+                    summary[name] = m
+                    print(f"{name:28s} Challenge_Avg {m['Challenge_Avg']:.4f}  mA {m['mA']:.4f}  InstF1 {m['Instance_F1']:.4f}")
+
+    pred = variants["flip-TTA + tuned offsets"]
+    with open(os.path.join(args.out, "per_attribute.csv"), "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["attribute", "dataset", "n_pos", "pos_recall", "neg_recall", "label_mA", "label_F1", "offset"])
+        dsa = np.asarray(va_ds)
+        for d in sorted(set(va_ds)):
+            msk = dsa == d
+            m = pedestrian_metrics(va_y[msk], pred[msk])
+            for j, a in enumerate(ATTRIBUTES):
+                w.writerow([a, d, int(va_y[msk, j].sum()), round(m["pos_recall"][j], 4), round(m["neg_recall"][j], 4),
+                            round(m["label_ma"][j], 4), round(m["label_f1"][j], 4), offsets[j]])
+    json.dump(summary, open(os.path.join(args.out, "results_summary.json"), "w"), indent=1)
+    open(os.path.join(args.out, "DONE"), "w").write(f"best epoch {best_ep} val Challenge_Avg {best:.4f}\n")
+    print("DONE. saved: best.pth, last.pth, offsets.json, val_logits.npz, results_summary.csv, per_attribute.csv, history.csv")
+
+
+if __name__ == "__main__":
+    main()

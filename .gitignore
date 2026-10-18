@@ -1,0 +1,22 @@
+# data and large artefacts stay on Kaggle / local disk, never in git
+data/
+*.tar
+*.zip
+*.pth
+*.pt
+*.ckpt
+*.npz
+*.tmp
+build*/
+runs/
+
+# python / notebooks
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+.env
+
+# OS
+.DS_Store
+Thumbs.db

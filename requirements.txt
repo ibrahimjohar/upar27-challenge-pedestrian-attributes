@@ -1,0 +1,12 @@
+# training / analysis (Kaggle already has torch, numpy, pandas, matplotlib, pillow)
+torch>=2.4
+torchvision
+timm==1.0.15
+numpy
+pillow
+pandas
+matplotlib
+
+# export: run src/export_submission.py with the grader's versions
+#   pip install torch==2.4.1 torchvision==0.19.1 timm==1.0.15 "numpy<2"
+# the submission itself (submission/run.py) needs only torch, numpy, pillow
