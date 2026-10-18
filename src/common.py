@@ -1,20 +1,12 @@
-"""Shared pieces: attribute order, the official UPAR metric, and threshold calibration.
+"""Attribute list, UPAR evaluation metrics and threshold calibration.
 
-numpy only (no torch), so it can be imported anywhere.
+The metric follows get_pedestrian_metrics from the UPAR 2024 challenge code, which
+the 2027 evaluation page says is reused. Instance F1 is computed from the mean
+instance precision and recall, Challenge_Avg is the harmonic mean of mA and
+Instance F1, and each dataset is scored separately before averaging.
 
-Metric = the WACV 2024 UPAR evaluation (get_pedestrian_metrics), which the 2027
-Codabench Evaluation page says it reproduces exactly:
-  * threshold 0.5 on probabilities
-  * label-based mA with eps = 1e-20
-  * instance precision / recall averaged over images, then
-    Instance_F1 = 2PR/(P+R) of those AVERAGES (not the mean of per-image F1)
-  * Challenge_Avg = harmonic mean of mA and Instance_F1
-  * every dataset scored on its own, leaderboard value = mean over datasets
-"Attributes whose ground truth is marked invalid in a dataset are excluded."
-The public labels contain no invalid markers, so `exclude_absent=True` treats an
-attribute with zero positives in a dataset (e.g. UpperBody-Color-Pink in
-Market1501, which Market does not annotate) as invalid there. Both variants are
-reported; model selection uses exclude_absent=True.
+With exclude_absent=True an attribute that has no positives in a dataset is
+left out for that dataset (e.g. Market1501 has no pink upper-body labels).
 """
 from __future__ import annotations
 
@@ -39,25 +31,23 @@ ATTRIBUTES = [
     "Accessory-Backpack", "Accessory-Bag", "Accessory-Glasses-Normal",
     "Accessory-Glasses-Sun", "Accessory-Hat",
 ]
-NUM_ATTR = len(ATTRIBUTES)  # 40
-DATASETS = ["Market1501", "PA100k", "PETA"]
+NUM_ATTR = len(ATTRIBUTES)
 EPS = 1e-20
+SCALAR_KEYS = ["Challenge_Avg", "mA", "Instance_F1", "Label_F1",
+               "Instance_Acc", "Instance_Prec", "Instance_Rec"]
 
 
 def read_gt(csv_path: str) -> tuple[list[str], np.ndarray]:
-    """Read an official gt.csv -> (relative image paths, uint8 labels [N,40]).
-
-    Checks that the header lists the 40 attributes in the expected order.
-    """
+    """Returns the image paths and an (N, 40) uint8 label array."""
     with open(csv_path, newline="", encoding="utf-8") as fh:
         rows = list(csv.reader(fh))
     header = [h.strip().lstrip("#").strip() for h in rows[0]]
     if header[1:] != ATTRIBUTES:
-        raise ValueError(f"Unexpected attribute header in {csv_path}: {header[1:5]}...")
+        raise ValueError(f"unexpected header in {csv_path}")
     paths = [r[0] for r in rows[1:]]
     labels = np.asarray([[int(v) for v in r[1:]] for r in rows[1:]], dtype=np.int8)
     if labels.shape[1] != NUM_ATTR or not np.isin(labels, (0, 1)).all():
-        raise ValueError("Labels must be 0/1 with 40 columns (no invalid markers expected).")
+        raise ValueError(f"labels in {csv_path} are not all 0/1")
     return paths, labels.astype(np.uint8)
 
 
@@ -66,13 +56,14 @@ def dataset_of(path: str) -> str:
 
 
 def pedestrian_metrics(gt: np.ndarray, pred: np.ndarray, index=None) -> dict:
-    """Exact port of the UPAR 2024 get_pedestrian_metrics on BINARY predictions."""
+    """pred is a boolean (N, 40) array; index restricts the attributes that are scored."""
     gt = np.asarray(gt)
     pred = np.asarray(pred).astype(bool)
     if index is not None:
         gt, pred = gt[:, index], pred[:, index]
     g1, g0 = gt == 1, gt == 0
-    # label-based
+
+    #label based
     gt_pos = g1.sum(0).astype(float)
     gt_neg = g0.sum(0).astype(float)
     tp = (g1 & pred).sum(0).astype(float)
@@ -83,7 +74,8 @@ def pedestrian_metrics(gt: np.ndarray, pred: np.ndarray, index=None) -> dict:
     label_ma = (pos_rec + neg_rec) / 2
     label_prec = tp / (tp + fp + EPS)
     label_f1 = 2 * label_prec * pos_rec / (label_prec + pos_rec + EPS)
-    # instance-based
+
+    #instance based
     i_gt = g1.sum(1).astype(float)
     i_pred = pred.sum(1).astype(float)
     inter = (g1 & pred).sum(1).astype(float)
@@ -92,6 +84,7 @@ def pedestrian_metrics(gt: np.ndarray, pred: np.ndarray, index=None) -> dict:
     i_prec = np.mean(inter / (i_pred + EPS))
     i_rec = np.mean(inter / (i_gt + EPS))
     i_f1 = 2 * i_prec * i_rec / (i_prec + i_rec + EPS)
+
     ma = float(np.mean(label_ma))
     return {
         "mA": ma,
@@ -108,18 +101,13 @@ def pedestrian_metrics(gt: np.ndarray, pred: np.ndarray, index=None) -> dict:
     }
 
 
-SCALAR_KEYS = ["Challenge_Avg", "mA", "Instance_F1", "Label_F1",
-               "Instance_Acc", "Instance_Prec", "Instance_Rec"]
-
-
 def valid_index(gt: np.ndarray) -> np.ndarray:
-    """Attributes with at least one positive in this subset (proxy for 'valid')."""
     return np.where(gt.sum(0) > 0)[0]
 
 
 def leaderboard_metrics(gt: np.ndarray, pred: np.ndarray, ds: Iterable[str],
                         exclude_absent: bool = True) -> dict:
-    """Score each dataset separately and average, like the leaderboard."""
+    """Scores each dataset separately and averages the results."""
     ds = np.asarray(list(ds))
     per = {}
     for name in sorted(set(ds)):
@@ -133,17 +121,12 @@ def leaderboard_metrics(gt: np.ndarray, pred: np.ndarray, ds: Iterable[str],
     return out
 
 
-def sigmoid(x):
-    return 1.0 / (1.0 + np.exp(-x))
-
-
 def calibrate_offsets(logits: np.ndarray, gt: np.ndarray, ds, grid=None,
                       passes: int = 2, exclude_absent: bool = True) -> tuple[np.ndarray, list]:
-    """Per-attribute logit offsets maximising the leaderboard Challenge_Avg.
+    """Coordinate ascent on per-attribute logit offsets to maximise Challenge_Avg.
 
-    The grader thresholds probabilities at 0.5 (logit 0). Adding an offset b_j to
-    attribute j's logit moves its effective threshold, so the tuned cut-off still
-    lands exactly at 0.5 for the grader. Coordinate ascent over a small grid.
+    The evaluation thresholds probabilities at 0.5, so adding an offset to an
+    attribute's logit is equivalent to moving its decision threshold.
     """
     if grid is None:
         grid = np.round(np.arange(-1.5, 1.5001, 0.125), 4)
@@ -157,13 +140,13 @@ def calibrate_offsets(logits: np.ndarray, gt: np.ndarray, ds, grid=None,
     log = [("start", best)]
     for p in range(passes):
         for j in range(logits.shape[1]):
-            cand_best, cand_val = best, off[j]
+            best_val = off[j]
             for g in grid:
-                o = off.copy(); o[j] = g
+                o = off.copy()
+                o[j] = g
                 s = score(o)
-                if s > cand_best + 1e-7:
-                    cand_best, cand_val = s, g
-            off[j] = cand_val
-            best = cand_best
+                if s > best + 1e-7:
+                    best, best_val = s, g
+            off[j] = best_val
         log.append((f"pass{p + 1}", best))
     return off, log
