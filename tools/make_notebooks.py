@@ -26,7 +26,7 @@ def notebook(cells, gpu):
 
 
 REPO_CFG = '''
-GITHUB_REPO = "YOUR_GITHUB_USERNAME/upar-track1"   # <- edit once: owner/name of your repo
+GITHUB_REPO = "ibrahimjohar/upar27-challenge-pedestrian-attributes"   # owner/name of the GitHub repo
 BRANCH = "main"
 '''
 

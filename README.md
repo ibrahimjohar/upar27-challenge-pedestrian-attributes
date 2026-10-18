@@ -49,7 +49,7 @@ the Kaggle notebook outputs.
 2. **Kaggle.** Verify your phone number in *Settings*, which turns on internet for notebooks. Then go to
    *Settings → Secrets* (or, inside a notebook, *Add-ons → Secrets*) and add a secret named
    `GITHUB_TOKEN` holding the token. Attach it to notebooks 02 and 03.
-3. **Notebooks.** In each notebook, set `GITHUB_REPO = "<your-username>/<repo-name>"` in the first code cell.
+3. **Notebooks.** `GITHUB_REPO` in the first code cell of notebooks 02 and 03 is preset to `ibrahimjohar/upar27-challenge-pedestrian-attributes`.
 
 ### Pipeline
 | Notebook | Accelerator | Inputs | Produces |
