@@ -1,0 +1,63 @@
+train: 131076, val: 33407, device: cuda, gpus: 2
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+  ep 1 it 0/2048 loss 0.8939 lr 1.95e-07
+  ep 1 it 200/2048 loss 0.5368 lr 1.97e-05
+  ep 1 it 400/2048 loss 0.4146 lr 3.93e-05
+  ep 1 it 600/2048 loss 0.3515 lr 5.88e-05
+  ep 1 it 800/2048 loss 0.3129 lr 7.83e-05
+  ep 1 it 1000/2048 loss 0.2869 lr 9.79e-05
+  ep 1 it 1200/2048 loss 0.2676 lr 1.17e-04
+  ep 1 it 1400/2048 loss 0.2528 lr 1.37e-04
+  ep 1 it 1600/2048 loss 0.2408 lr 1.56e-04
+  ep 1 it 1800/2048 loss 0.2309 lr 1.76e-04
+  ep 1 it 2000/2048 loss 0.2225 lr 1.96e-04
+ep 1 loss 0.2207 (10.0 min)
+  ep 2 it 0/2048 loss 0.1880 lr 2.00e-04
+  ep 2 it 200/2048 loss 0.1394 lr 2.00e-04
+  ep 2 it 400/2048 loss 0.1358 lr 1.99e-04
+  ep 2 it 600/2048 loss 0.1330 lr 1.97e-04
+  ep 2 it 800/2048 loss 0.1305 lr 1.95e-04
+  ep 2 it 1000/2048 loss 0.1285 lr 1.93e-04
+  ep 2 it 1200/2048 loss 0.1261 lr 1.90e-04
+  ep 2 it 1400/2048 loss 0.1238 lr 1.86e-04
+  ep 2 it 1600/2048 loss 0.1216 lr 1.82e-04
+  ep 2 it 1800/2048 loss 0.1194 lr 1.77e-04
+  ep 2 it 2000/2048 loss 0.1176 lr 1.72e-04
+ep 2 loss 0.1171 (9.9 min)
+  ep 3 it 0/2048 loss 0.0896 lr 1.71e-04
+  ep 3 it 200/2048 loss 0.0951 lr 1.65e-04
+  ep 3 it 400/2048 loss 0.0947 lr 1.59e-04
+  ep 3 it 600/2048 loss 0.0933 lr 1.53e-04
+  ep 3 it 800/2048 loss 0.0915 lr 1.46e-04
+  ep 3 it 1000/2048 loss 0.0898 lr 1.39e-04
+  ep 3 it 1200/2048 loss 0.0886 lr 1.32e-04
+  ep 3 it 1400/2048 loss 0.0870 lr 1.25e-04
+  ep 3 it 1600/2048 loss 0.0854 lr 1.17e-04
+  ep 3 it 1800/2048 loss 0.0840 lr 1.09e-04
+  ep 3 it 2000/2048 loss 0.0825 lr 1.02e-04
+ep 3 loss 0.0822 (9.9 min)
+  ep 4 it 0/2048 loss 0.0828 lr 1.00e-04
+  ep 4 it 200/2048 loss 0.0683 lr 9.23e-05
+  ep 4 it 400/2048 loss 0.0668 lr 8.47e-05
+  ep 4 it 600/2048 loss 0.0657 lr 7.72e-05
+  ep 4 it 800/2048 loss 0.0648 lr 6.98e-05
+  ep 4 it 1000/2048 loss 0.0635 lr 6.25e-05
+  ep 4 it 1200/2048 loss 0.0625 lr 5.56e-05
+  ep 4 it 1400/2048 loss 0.0614 lr 4.88e-05
+  ep 4 it 1600/2048 loss 0.0602 lr 4.24e-05
+  ep 4 it 1800/2048 loss 0.0593 lr 3.63e-05
+  ep 4 it 2000/2048 loss 0.0584 lr 3.06e-05
+ep 4 loss 0.0582 (9.9 min)
+  ep 5 it 0/2048 loss 0.0560 lr 2.93e-05
+  ep 5 it 200/2048 loss 0.0473 lr 2.41e-05
+  ep 5 it 400/2048 loss 0.0473 lr 1.93e-05
+  ep 5 it 600/2048 loss 0.0468 lr 1.50e-05
+  ep 5 it 800/2048 loss 0.0461 lr 1.12e-05
+  ep 5 it 1000/2048 loss 0.0458 lr 7.95e-06
+  ep 5 it 1200/2048 loss 0.0454 lr 5.23e-06
+  ep 5 it 1400/2048 loss 0.0453 lr 3.06e-06
+  ep 5 it 1600/2048 loss 0.0452 lr 1.47e-06
+  ep 5 it 1800/2048 loss 0.0450 lr 4.48e-07
+  ep 5 it 2000/2048 loss 0.0447 lr 1.62e-08
+ep 5 loss 0.0448 (9.9 min)
+finished (train+val)

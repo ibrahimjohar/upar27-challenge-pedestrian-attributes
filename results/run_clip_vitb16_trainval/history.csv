@@ -1,0 +1,6 @@
+epoch,train_loss,minutes,val_Challenge_Avg,val_mA,val_Instance_F1,val_Label_F1,val_Instance_Acc,val_Instance_Prec,val_Instance_Rec
+1,0.22069,9.99
+2,0.11714,9.94
+3,0.08222,9.94
+4,0.05819,9.92
+5,0.04477,9.91
