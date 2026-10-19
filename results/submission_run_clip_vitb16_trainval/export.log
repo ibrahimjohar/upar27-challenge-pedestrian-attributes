@@ -1,0 +1,12 @@
+/usr/local/lib/python3.13/dist-packages/torch/__init__.py:2253: TracerWarning: Converting a tensor to a Python boolean might cause the trace to be incorrect. We can't record the data flow of Python values, so this value will be treated as a constant in the future. This means that the trace might not generalize to other inputs!
+  if not condition:
+warning: exporting with torch 2.11.0+cu128, the evaluation uses 2.4.1
+trace max abs diff: 0.00e+00
+/kaggle/working/submission_run_clip_vitb16_trainval/upar_track1_submission.zip: 159.0 MB, files ['meta.json', 'metadata.yaml', 'model.pt', 'run.py']
+[run.py] torch 2.11.0+cu128, device cuda
+[run.py] model loaded in 0.8s
+load_model: 0.8s on cuda
+[run.py] 64 images, 31 images/s
+run.py vs eager: max prob diff 0.0056, flipped decisions 0/4080, predict_image matches: True
+speed: 275 images/s on cuda
+done: /kaggle/working/submission_run_clip_vitb16_trainval/upar_track1_submission.zip
