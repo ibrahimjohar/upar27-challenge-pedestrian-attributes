@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import io
 import json
 import math
 import os
@@ -61,19 +62,49 @@ class UPARDataset(Dataset):
         return self.transform(img), torch.from_numpy(self.labels[i].astype(np.float32))
 
 
-def make_transforms(mean, std, train: bool):
+class CameraDegrade:
+    """Low resolution, blur and JPEG artefacts, as seen in surveillance footage."""
+
+    def __init__(self, p_down=0.5, p_blur=0.3, p_jpeg=0.4):
+        self.p_down = p_down
+        self.p_blur = p_blur
+        self.p_jpeg = p_jpeg
+        self.blur = T.GaussianBlur(5, sigma=(0.1, 1.5))
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        if random.random() < self.p_down:
+            s = random.uniform(0.3, 0.8)
+            small = (max(8, int(W * s)), max(16, int(H * s)))
+            down = random.choice([Image.BILINEAR, Image.BICUBIC, Image.NEAREST])
+            img = img.resize(small, down).resize((W, H), Image.BILINEAR)
+        if random.random() < self.p_blur:
+            img = self.blur(img)
+        if random.random() < self.p_jpeg:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=random.randint(30, 90))
+            buf.seek(0)
+            img = Image.open(buf).convert("RGB")
+        return img
+
+
+def make_transforms(mean, std, train: bool, aug: str = "basic"):
     norm = [T.ToTensor(), T.Normalize(mean, std)]
     if not train:
         return T.Compose(norm)
     #no hue/saturation jitter since colours are labels
-    return T.Compose([
+    steps = [
         T.RandomHorizontalFlip(),
         T.Pad(10, padding_mode="edge"),
         T.RandomCrop((H, W)),
+    ]
+    if aug == "camera":
+        steps.append(CameraDegrade())
+    steps += [
         T.ColorJitter(brightness=0.2, contrast=0.2),
         *norm,
         T.RandomErasing(p=0.3, scale=(0.02, 0.12), ratio=(0.3, 3.3), value=0),
-    ])
+    ]
+    return T.Compose(steps)
 
 
 def balanced_weights(paths, power: float):
@@ -171,6 +202,7 @@ def parse_args():
     ap.add_argument("--warmup-epochs", type=float, default=1.0)
     ap.add_argument("--ema-decay", type=float, default=0.9995)
     ap.add_argument("--balance-power", type=float, default=0.5)
+    ap.add_argument("--aug", default="basic", choices=["basic", "camera"])
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--train-on-val", action="store_true", help="train on train+val, no validation")
     ap.add_argument("--limit", type=int, default=0, help="use N random train and val images (debugging)")
@@ -212,7 +244,7 @@ def main():
     model.to(device)
     criterion = WeightedBCE(tr_y.mean(0)).to(device)
 
-    train_set = UPARDataset(args.data_root, tr_paths, tr_y, make_transforms(mean, std, True))
+    train_set = UPARDataset(args.data_root, tr_paths, tr_y, make_transforms(mean, std, True, args.aug))
     val_set = UPARDataset(args.data_root, va_paths, va_y, make_transforms(mean, std, False))
     sampler = WeightedRandomSampler(balanced_weights(tr_paths, args.balance_power), len(tr_paths), replacement=True)
     tl = DataLoader(train_set, args.batch_size, sampler=sampler, num_workers=args.workers,

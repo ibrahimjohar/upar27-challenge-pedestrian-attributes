@@ -114,7 +114,8 @@ EPOCHS = 10
 BATCH = 64
 LR = 2e-4                   # 4e-4 for convnext
 TRAIN_ON_VAL = False        # final model on train+val
-RUN_NAME = f"run_{BACKBONE}" + ("_trainval" if TRAIN_ON_VAL else "")
+AUG = "basic"               # or "camera": adds low-res / blur / JPEG degradation
+RUN_NAME = f"run_{BACKBONE}" + ("_camaug" if AUG == "camera" else "") + ("_trainval" if TRAIN_ON_VAL else "")
 TIME_BUDGET_H = 11.0
 SMOKE_TEST = True           # one epoch on 640 images before the full run
 PUSH_RESULTS = True
@@ -142,7 +143,7 @@ if SMOKE_TEST and not RESUMING:
 '''),
     code('''
 flags = "--train-on-val" if TRAIN_ON_VAL else ""
-!cd {CODE} && python src/train.py --data-root /tmp/data --backbone {BACKBONE} --epochs {EPOCHS} --batch-size {BATCH} --lr {LR} --workers 4 --time-budget-hours {TIME_BUDGET_H} --out {OUT} {flags} 2>&1 | tee -a {OUT}/train.log
+!cd {CODE} && python src/train.py --data-root /tmp/data --backbone {BACKBONE} --epochs {EPOCHS} --batch-size {BATCH} --lr {LR} --aug {AUG} --workers 4 --time-budget-hours {TIME_BUDGET_H} --out {OUT} {flags} 2>&1 | tee -a {OUT}/train.log
 '''),
     code('''
 import pandas as pd
@@ -187,23 +188,26 @@ nb3 = notebook([
 # 03 Export
 
 Accelerator: GPU T4, Internet: On, secret `GITHUB_TOKEN` attached.
-Inputs: notebook 01 (data) and notebook 02 (trained run). For a train+val model, also add the train-only run for its `offsets.json`.
+Inputs: notebook 01 (data) and notebook 02 (trained run). For a train+val model the offsets are taken from the train-only run in `results/`.
 
-torch 2.4.1 is installed first to match the evaluation container. The zip is written to the notebook output.
+Kaggle's Python 3.13 has no torch 2.4.1 build, so the export uses the installed torch; TorchScript files saved this way load in 2.4.1.
+The zip is written to the notebook output.
 """),
-    code('!pip install -q torch==2.4.1 torchvision==0.19.1 timm==1.0.15 "numpy<2"'),
+    code('!pip install -q timm==1.0.15'),
     code(REPO_CFG + '''
 PUSH_RESULTS = True
 '''),
     code(CLONE),
     code(FIND_TAR),
     code('''
-cks = sorted(glob.glob("/kaggle/input/**/final.pth", recursive=True) + glob.glob("/kaggle/input/**/best.pth", recursive=True))
+cks = sorted(glob.glob("/kaggle/input/**/final.pth", recursive=True)) + sorted(glob.glob("/kaggle/input/**/best.pth", recursive=True))
+#offsets always come from a train-only run, either an attached 02 version or results/ in the repo
 offs = sorted(p for p in glob.glob("/kaggle/input/**/offsets.json", recursive=True) if "trainval" not in p)
+offs += sorted(p for p in glob.glob(f"{CODE}/results/*/offsets.json") if "trainval" not in p)
 print("checkpoints:", cks)
 print("offsets:", offs)
 CKPT = cks[0]                       # final.pth if there is one, otherwise best.pth
-OFFSETS = offs[0] if offs else ""   # offsets always come from a train-only run
+OFFSETS = offs[0] if offs else ""
 SUB_NAME = "submission_" + os.path.basename(os.path.dirname(CKPT))
 print("using", CKPT, OFFSETS)
 '''),
