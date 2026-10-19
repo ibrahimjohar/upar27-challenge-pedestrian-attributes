@@ -35,6 +35,7 @@ from common import (ATTRIBUTES, NUM_ATTR, SCALAR_KEYS, calibrate_offsets, datase
 H, W = 256, 128
 BACKBONES = {
     "clip_vitb16": ("vit_base_patch16_clip_224.openai", {"img_size": (H, W)}),
+    "dinov2_vitb14": ("vit_base_patch14_dinov2.lvd142m", {"img_size": (252, 126)}),
     "convnext_tiny": ("convnext_tiny.fb_in22k_ft_in1k", {}),
     "convnext_small": ("convnext_small.fb_in22k_ft_in1k", {}),
     "resnet50": ("resnet50.a1_in1k", {}),
@@ -118,6 +119,10 @@ def build_model(backbone: str, pretrained: bool):
     import timm
     name, kw = BACKBONES.get(backbone, (backbone, {}))
     model = timm.create_model(name, pretrained=pretrained, num_classes=NUM_ATTR, **kw)
+    pe = getattr(model, "patch_embed", None)
+    if pe is not None and (H % pe.patch_size[0] or W % pe.patch_size[1]):
+        #patch 14 does not divide 256x128, the patch conv just skips the last 4 rows and 2 columns
+        pe.img_size = None
     cfg = model.pretrained_cfg
     mean = tuple(cfg.get("mean", (0.485, 0.456, 0.406)))
     std = tuple(cfg.get("std", (0.229, 0.224, 0.225)))

@@ -109,7 +109,7 @@ add that version of this notebook as an input and run it again.
 Result files (csv, json, png, logs) are pushed to `results/<RUN_NAME>/` in the repo. Weights stay in the notebook output.
 """),
     code(REPO_CFG + '''
-BACKBONE = "clip_vitb16"    # or convnext_tiny / convnext_small
+BACKBONE = "clip_vitb16"    # or dinov2_vitb14 / convnext_small
 EPOCHS = 10
 BATCH = 64
 LR = 2e-4                   # 4e-4 for convnext
