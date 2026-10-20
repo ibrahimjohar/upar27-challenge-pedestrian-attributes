@@ -1,0 +1,4 @@
+dataset,brightness,contrast,sharpness
+Market1501,99.5,45.7,48.1
+PA100k,113.1,50.8,176.1
+PETA,109.0,45.4,45.6

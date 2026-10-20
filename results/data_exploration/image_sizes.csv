@@ -1,0 +1,4 @@
+dataset,h_median,w_median,h_min,h_max,aspect_median,below_256_tall
+Market1501,128.0,64.0,128,128,2.0,1.0
+PA100k,201.0,74.0,104,715,2.698,0.754
+PETA,160.0,74.0,43,384,2.414,0.887
