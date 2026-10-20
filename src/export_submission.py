@@ -3,6 +3,9 @@
 usage: python src/export_submission.py --ckpt runs/clip/best.pth --offsets runs/clip/offsets.json \
            --data-root /tmp/data --zip upar_track1_submission.zip
 
+Several --ckpt paths make an ensemble: logits are averaged with --weights (equal by default),
+each model with its own normalisation, before the offsets are added.
+
 Run it with torch 2.4.1 to match the evaluation container. After zipping, the
 run.py inside the zip is loaded the same way the ingestion program loads it and
 its outputs are compared with the eager model on a few validation images.
@@ -33,21 +36,26 @@ BATCH = 64
 
 class Deploy(nn.Module):
     #uint8 (B, H, W, 3) in, probabilities out
-    def __init__(self, net, mean, std, offsets, flip: bool):
+    def __init__(self, nets, means, stds, weights, offsets, flip: bool):
         super().__init__()
-        self.net = net
+        self.nets = nn.ModuleList(nets)
         self.flip = flip
-        self.register_buffer("mean", torch.tensor(mean, dtype=torch.float32).view(1, 3, 1, 1))
-        self.register_buffer("std", torch.tensor(std, dtype=torch.float32).view(1, 3, 1, 1))
+        self.weights = [float(w) for w in weights]
+        self.register_buffer("mean", torch.tensor(means, dtype=torch.float32).view(-1, 1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor(stds, dtype=torch.float32).view(-1, 1, 3, 1, 1))
         self.register_buffer("offsets", torch.tensor(offsets, dtype=torch.float32).view(1, -1))
 
     def forward(self, x):
         x = x.permute(0, 3, 1, 2).type_as(self.mean) / 255.0
-        x = (x - self.mean) / self.std
-        lg = self.net(x)
-        if self.flip:
-            lg = (lg + self.net(torch.flip(x, dims=[3]))) / 2
-        return torch.sigmoid((lg + self.offsets).float())
+        lg = None
+        for k, net in enumerate(self.nets):
+            xk = (x - self.mean[k]) / self.std[k]
+            out = net(xk)
+            if self.flip:
+                out = (out + net(torch.flip(xk, dims=[3]))) / 2
+            out = out.float() * self.weights[k]
+            lg = out if lg is None else lg + out
+        return torch.sigmoid(lg + self.offsets)
 
 
 def sha256(path):
@@ -60,7 +68,8 @@ def sha256(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", required=True, help="best.pth or final.pth")
+    ap.add_argument("--ckpt", required=True, nargs="+", help="best.pth or final.pth, several for an ensemble")
+    ap.add_argument("--weights", type=float, nargs="*", default=None)
     ap.add_argument("--offsets", default=None, help="offsets.json from a train-only run")
     ap.add_argument("--no-flip", action="store_true")
     ap.add_argument("--fp32-weights", action="store_true")
@@ -73,18 +82,26 @@ def main():
     if not torch.__version__.startswith("2.4.1"):
         print(f"warning: exporting with torch {torch.__version__}, the evaluation uses 2.4.1")
 
-    ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
-    cfg = ck["config"]
-    assert cfg["attributes"] == ATTRIBUTES, "attribute order in checkpoint does not match"
-    net, _, _ = build_model(cfg["backbone"], pretrained=False)
-    net.load_state_dict(ck["state_dict"])
-    net.eval()
+    nets, means, stds, cfgs, epochs = [], [], [], [], []
+    for path in args.ckpt:
+        ck = torch.load(path, map_location="cpu", weights_only=False)
+        cfg = ck["config"]
+        assert cfg["attributes"] == ATTRIBUTES, f"attribute order in {path} does not match"
+        net, _, _ = build_model(cfg["backbone"], pretrained=False)
+        net.load_state_dict(ck["state_dict"])
+        nets.append(net.eval())
+        means.append(cfg["mean"])
+        stds.append(cfg["std"])
+        cfgs.append(cfg)
+        epochs.append(ck.get("epoch"))
+    weights = args.weights or [1.0 / len(nets)] * len(nets)
+    assert len(weights) == len(nets), "one weight per checkpoint"
     offsets = np.zeros(len(ATTRIBUTES))
     if args.offsets:
         od = json.load(open(args.offsets))
         assert od["attributes"] == ATTRIBUTES
         offsets = np.asarray(od["offsets"], dtype=np.float32)
-    deploy = Deploy(net, cfg["mean"], cfg["std"], offsets, not args.no_flip).eval()
+    deploy = Deploy(nets, means, stds, weights, offsets, not args.no_flip).eval()
 
     #trace in fp32 on cpu, weights are stored in fp16 afterwards
     example = torch.randint(0, 256, (BATCH, H, W, 3), dtype=torch.uint8)
@@ -100,9 +117,9 @@ def main():
     to_save.save(os.path.join(args.out_dir, "model.pt"))
     shutil.copy(os.path.join(TEMPLATE, "run.py"), args.out_dir)
     shutil.copy(os.path.join(TEMPLATE, "metadata.yaml"), args.out_dir)
-    meta = {"attributes": ATTRIBUTES, "backbone": cfg["backbone"], "input": [H, W],
-            "flip_tta": not args.no_flip, "offsets": offsets.tolist(),
-            "trained_on_val": bool(cfg.get("train_on_val")), "checkpoint_epoch": ck.get("epoch"),
+    meta = {"attributes": ATTRIBUTES, "backbone": [c["backbone"] for c in cfgs], "weights": weights,
+            "input": [H, W], "flip_tta": not args.no_flip, "offsets": offsets.tolist(),
+            "trained_on_val": [bool(c.get("train_on_val")) for c in cfgs], "checkpoint_epoch": epochs,
             "torch_export_version": torch.__version__}
     json.dump(meta, open(os.path.join(args.out_dir, "meta.json"), "w"), indent=1)
 

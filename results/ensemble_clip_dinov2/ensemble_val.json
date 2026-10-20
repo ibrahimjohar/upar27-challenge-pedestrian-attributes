@@ -1,0 +1,106 @@
+[
+ {
+  "config": "1.00 clip",
+  "no_offsets": 0.8786,
+  "mA": 0.8585,
+  "inst_f1": 0.8999,
+  "offsets_in_sample": 0.8907,
+  "offsets_2fold": 0.8886
+ },
+ {
+  "config": "1.00 dinov2",
+  "no_offsets": 0.8732,
+  "mA": 0.8453,
+  "inst_f1": 0.903,
+  "offsets_in_sample": 0.8902,
+  "offsets_2fold": 0.8888
+ },
+ {
+  "config": "1.00 camaug",
+  "no_offsets": 0.877,
+  "mA": 0.8557,
+  "inst_f1": 0.8993,
+  "offsets_in_sample": 0.8877,
+  "offsets_2fold": 0.8857
+ },
+ {
+  "config": "0.25 clip + 0.75 dinov2",
+  "no_offsets": 0.8776,
+  "mA": 0.8508,
+  "inst_f1": 0.9061,
+  "offsets_in_sample": 0.8934,
+  "offsets_2fold": 0.8913
+ },
+ {
+  "config": "0.50 clip + 0.50 dinov2",
+  "no_offsets": 0.8801,
+  "mA": 0.8555,
+  "inst_f1": 0.9062,
+  "offsets_in_sample": 0.8947,
+  "offsets_2fold": 0.8931
+ },
+ {
+  "config": "0.75 clip + 0.25 dinov2",
+  "no_offsets": 0.8798,
+  "mA": 0.8567,
+  "inst_f1": 0.9043,
+  "offsets_in_sample": 0.8934,
+  "offsets_2fold": 0.8888
+ },
+ {
+  "config": "0.25 clip + 0.75 camaug",
+  "no_offsets": 0.8785,
+  "mA": 0.8573,
+  "inst_f1": 0.9008,
+  "offsets_in_sample": 0.8892,
+  "offsets_2fold": 0.8868
+ },
+ {
+  "config": "0.50 clip + 0.50 camaug",
+  "no_offsets": 0.8793,
+  "mA": 0.8581,
+  "inst_f1": 0.9016,
+  "offsets_in_sample": 0.8918,
+  "offsets_2fold": 0.8896
+ },
+ {
+  "config": "0.75 clip + 0.25 camaug",
+  "no_offsets": 0.8796,
+  "mA": 0.8591,
+  "inst_f1": 0.9012,
+  "offsets_in_sample": 0.8917,
+  "offsets_2fold": 0.8893
+ },
+ {
+  "config": "0.25 dinov2 + 0.75 camaug",
+  "no_offsets": 0.8792,
+  "mA": 0.8557,
+  "inst_f1": 0.904,
+  "offsets_in_sample": 0.8931,
+  "offsets_2fold": 0.8912
+ },
+ {
+  "config": "0.50 dinov2 + 0.50 camaug",
+  "no_offsets": 0.8781,
+  "mA": 0.8518,
+  "inst_f1": 0.9062,
+  "offsets_in_sample": 0.8947,
+  "offsets_2fold": 0.8931
+ },
+ {
+  "config": "0.75 dinov2 + 0.25 camaug",
+  "no_offsets": 0.8766,
+  "mA": 0.8492,
+  "inst_f1": 0.9058,
+  "offsets_in_sample": 0.8939,
+  "offsets_2fold": 0.8921
+ },
+ {
+  "config": "0.33 clip + 0.33 dinov2 + 0.33 camaug",
+  "no_offsets": 0.8804,
+  "mA": 0.8563,
+  "inst_f1": 0.906,
+  "offsets_in_sample": 0.8944,
+  "offsets_2fold": 0.8924
+ }
+]

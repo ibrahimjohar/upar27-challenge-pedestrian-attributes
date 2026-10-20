@@ -187,8 +187,12 @@ nb3 = notebook([
     md("""
 # 03 Export
 
-Accelerator: GPU T4, Internet: On, secret `GITHUB_TOKEN` attached.
-Inputs: notebook 01 (data) and notebook 02 (trained run). For a train+val model the offsets are taken from the train-only run in `results/`.
+Accelerator: GPU T4 (or None, the export also works on CPU), Internet: On, secret `GITHUB_TOKEN` attached.
+Inputs: notebook 01 (data) and the training notebook(s). For a train+val model the offsets are taken from the train-only run in `results/`.
+
+For an ensemble, list the run folders in `ENSEMBLE` and attach every training notebook that holds one of them
+(a notebook can only be attached once, so each member has to come from a different notebook or version).
+Its offsets are tuned on the averaged validation logits with `tools/eval_ensemble.py` and stored in `results/`.
 
 Kaggle's Python 3.13 has no torch 2.4.1 build, so the export uses the installed torch; TorchScript files saved this way load in 2.4.1.
 The zip is written to the notebook output.
@@ -196,20 +200,31 @@ The zip is written to the notebook output.
     code('!pip install -q timm==1.0.15'),
     code(REPO_CFG + '''
 PUSH_RESULTS = True
+ENSEMBLE = []               # e.g. ["run_clip_vitb16", "run_dinov2_vitb14"]
+ENSEMBLE_OFFSETS = "results/ensemble_clip_dinov2/offsets.json"
 '''),
     code(CLONE),
     code(FIND_TAR),
     code('''
-cks = sorted(glob.glob("/kaggle/input/**/final.pth", recursive=True)) + sorted(glob.glob("/kaggle/input/**/best.pth", recursive=True))
-#offsets always come from a train-only run, either an attached 02 version or results/ in the repo
-offs = sorted(p for p in glob.glob("/kaggle/input/**/offsets.json", recursive=True) if "trainval" not in p)
-offs += sorted(p for p in glob.glob(f"{CODE}/results/*/offsets.json") if "trainval" not in p)
-print("checkpoints:", cks)
-print("offsets:", offs)
-CKPT = cks[0]                       # final.pth if there is one, otherwise best.pth
-OFFSETS = offs[0] if offs else ""
-SUB_NAME = "submission_" + os.path.basename(os.path.dirname(CKPT))
-print("using", CKPT, OFFSETS)
+if ENSEMBLE:
+    found = [glob.glob(f"/kaggle/input/**/{r}/best.pth", recursive=True) for r in ENSEMBLE]
+    for r, f in zip(ENSEMBLE, found):
+        assert f, f"{r}/best.pth not found, attach the notebook version that trained it"
+    CKPT = " ".join(f[0] for f in found)
+    OFFSETS = f"{CODE}/{ENSEMBLE_OFFSETS}"
+    SUB_NAME = "submission_ensemble_" + "_".join(r.replace("run_", "") for r in ENSEMBLE)
+    print("using", CKPT, OFFSETS)
+else:
+    cks = sorted(glob.glob("/kaggle/input/**/final.pth", recursive=True)) + sorted(glob.glob("/kaggle/input/**/best.pth", recursive=True))
+    #offsets always come from a train-only run, either an attached 02 version or results/ in the repo
+    offs = sorted(p for p in glob.glob("/kaggle/input/**/offsets.json", recursive=True) if "trainval" not in p)
+    offs += sorted(p for p in glob.glob(f"{CODE}/results/run_*/offsets.json") if "trainval" not in p)
+    print("checkpoints:", cks)
+    print("offsets:", offs)
+    CKPT = cks[0]                       # final.pth if there is one, otherwise best.pth
+    OFFSETS = offs[0] if offs else ""
+    SUB_NAME = "submission_" + os.path.basename(os.path.dirname(CKPT))
+    print("using", CKPT, OFFSETS)
 '''),
     code('''
 OUTD = f"/kaggle/working/{SUB_NAME}"
