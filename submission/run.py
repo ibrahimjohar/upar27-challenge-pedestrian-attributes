@@ -43,9 +43,22 @@ def load_model() -> None:
     model = torch.jit.load(os.path.join(HERE, "model.pt"), map_location=_DEVICE)
     #weights are saved in fp16
     model = model.half() if _DEVICE.type == "cuda" else model.float()
+    if meta.get("int8"):
+        _fill_int8(model, meta["int8"])
     model.eval()
     _MODEL = model
     _log(f"model loaded in {time.time() - t0:.1f}s")
+
+
+def _fill_int8(model, names: list[str]) -> None:
+    #the large weight matrices are stored as int8 with one scale per row
+    data = np.load(os.path.join(HERE, "weights_int8.npz"))
+    sd = model.state_dict()
+    with torch.no_grad():
+        for i, name in enumerate(names):
+            w = torch.from_numpy(data[f"q{i}"]).float() * torch.from_numpy(data[f"s{i}"])[:, None]
+            sd[name].copy_(w.reshape(sd[name].shape))
+    _log(f"filled {len(names)} int8 weight matrices")
 
 
 def _load_image(path: str) -> np.ndarray:

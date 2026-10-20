@@ -58,6 +58,27 @@ class Deploy(nn.Module):
         return torch.sigmoid(lg + self.offsets)
 
 
+def quantize_int8(module):
+    """Moves the large weight matrices out of the TorchScript file into int8 arrays.
+
+    Each row gets its own scale. The weights left in the module are zeroed, so model.pt
+    compresses to almost nothing and run.py fills them back in at load time.
+    """
+    names, arrays = [], {}
+    with torch.no_grad():
+        for name, t in module.state_dict().items():
+            if not name.endswith("weight") or t.dim() < 2 or t.numel() < 65536:
+                continue
+            w = t.float().reshape(t.shape[0], -1)
+            scale = w.abs().amax(1).clamp_min(1e-8) / 127
+            q = torch.round(w / scale[:, None]).clamp(-127, 127).to(torch.int8)
+            arrays[f"q{len(names)}"] = q.numpy()
+            arrays[f"s{len(names)}"] = scale.numpy().astype(np.float32)
+            names.append(name)
+            t.zero_()
+    return names, arrays
+
+
 def sha256(path):
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -73,6 +94,7 @@ def main():
     ap.add_argument("--offsets", default=None, help="offsets.json from a train-only run")
     ap.add_argument("--no-flip", action="store_true")
     ap.add_argument("--fp32-weights", action="store_true")
+    ap.add_argument("--int8", action="store_true", help="int8 weight matrices, about half the zip size")
     ap.add_argument("--data-root", default=None, help="used to test the zip on validation images")
     ap.add_argument("--ann-root", default=None)
     ap.add_argument("--out-dir", default="build")
@@ -113,6 +135,11 @@ def main():
     if os.path.exists(args.out_dir):
         shutil.rmtree(args.out_dir)
     os.makedirs(args.out_dir)
+    int8_names = []
+    if args.int8:
+        int8_names, arrays = quantize_int8(traced)
+        np.savez(os.path.join(args.out_dir, "weights_int8.npz"), **arrays)
+        print(f"int8: {len(int8_names)} weight matrices")
     to_save = traced if args.fp32_weights else traced.half()
     to_save.save(os.path.join(args.out_dir, "model.pt"))
     shutil.copy(os.path.join(TEMPLATE, "run.py"), args.out_dir)
@@ -120,7 +147,7 @@ def main():
     meta = {"attributes": ATTRIBUTES, "backbone": [c["backbone"] for c in cfgs], "weights": weights,
             "input": [H, W], "flip_tta": not args.no_flip, "offsets": offsets.tolist(),
             "trained_on_val": [bool(c.get("train_on_val")) for c in cfgs], "checkpoint_epoch": epochs,
-            "torch_export_version": torch.__version__}
+            "torch_export_version": torch.__version__, "int8": int8_names}
     json.dump(meta, open(os.path.join(args.out_dir, "meta.json"), "w"), indent=1)
 
     #run.py has to sit at the root of the archive
@@ -182,6 +209,8 @@ def main():
     report = {"zip": os.path.basename(args.zip), "zip_mb": round(zip_mb, 1),
               "sha256": sha256(args.zip), "ckpt": args.ckpt, "offsets": args.offsets, **meta}
     report.pop("attributes", None)
+    report.pop("int8", None)
+    report["int8_matrices"] = len(int8_names)
     json.dump(report, open(os.path.splitext(args.zip)[0] + "_manifest.json", "w"), indent=1)
     print(f"done: {args.zip}")
 

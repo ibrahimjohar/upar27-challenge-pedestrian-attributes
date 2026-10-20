@@ -230,8 +230,10 @@ else:
 OUTD = f"/kaggle/working/{SUB_NAME}"
 os.makedirs(OUTD, exist_ok=True)
 off_flag = f"--offsets {OFFSETS}" if OFFSETS else ""
+#two fp16 models make a ~320 MB zip, which Codabench did not accept, int8 weights keep it near 160 MB
+int8_flag = "--int8" if ENSEMBLE else ""
 !python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-!cd {CODE} && python src/export_submission.py --ckpt {CKPT} {off_flag} --data-root /tmp/data --out-dir /tmp/build --zip {OUTD}/upar_track1_submission.zip 2>&1 | tee {OUTD}/export.log
+!cd {CODE} && python src/export_submission.py --ckpt {CKPT} {off_flag} {int8_flag} --data-root /tmp/data --out-dir /tmp/build --zip {OUTD}/upar_track1_submission.zip 2>&1 | tee {OUTD}/export.log
 '''),
     code('''
 if PUSH_RESULTS and TOKEN:
