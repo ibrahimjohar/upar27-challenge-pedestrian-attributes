@@ -1,0 +1,73 @@
+{
+ "zip": "upar_track1_submission.zip",
+ "zip_mb": 317.8,
+ "sha256": "e47e57dc3659037b9a01c444beeac19c112113a21e02d81629c77ffbc4e1bf0f",
+ "ckpt": [
+  "/kaggle/input/datasets/ibrahimjohar/clip-vitb16-baseline/run_clip_vitb16/best.pth",
+  "/kaggle/input/notebooks/ibrahimjohar/02-train-dinov2/run_dinov2_vitb14/best.pth"
+ ],
+ "offsets": [
+  1.5,
+  -1.375,
+  1.5,
+  0.625,
+  0.125,
+  0.875,
+  1.5,
+  -0.75,
+  -0.375,
+  1.5,
+  0.375,
+  1.5,
+  0.5,
+  1.5,
+  1.375,
+  1.375,
+  0.125,
+  -0.125,
+  1.5,
+  1.375,
+  1.375,
+  0.375,
+  0.5,
+  1.5,
+  1.5,
+  0.375,
+  1.25,
+  1.5,
+  1.125,
+  1.25,
+  1.375,
+  1.375,
+  1.5,
+  -0.375,
+  1.0,
+  0.25,
+  0.375,
+  -0.625,
+  1.375,
+  1.5
+ ],
+ "backbone": [
+  "clip_vitb16",
+  "dinov2_vitb14"
+ ],
+ "weights": [
+  0.5,
+  0.5
+ ],
+ "input": [
+  256,
+  128
+ ],
+ "flip_tta": true,
+ "trained_on_val": [
+  false,
+  false
+ ],
+ "checkpoint_epoch": [
+  4,
+  4
+ ],
+ "torch_export_version": "2.11.0+cpu"
+}
