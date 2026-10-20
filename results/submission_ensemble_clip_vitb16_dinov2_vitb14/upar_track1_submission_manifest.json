@@ -1,7 +1,7 @@
 {
  "zip": "upar_track1_submission.zip",
- "zip_mb": 317.8,
- "sha256": "e47e57dc3659037b9a01c444beeac19c112113a21e02d81629c77ffbc4e1bf0f",
+ "zip_mb": 153.7,
+ "sha256": "b1babd79365adef430f05e8af68d4f2b8a0859b1183928e239998ec5e0f15082",
  "ckpt": [
   "/kaggle/input/datasets/ibrahimjohar/clip-vitb16-baseline/run_clip_vitb16/best.pth",
   "/kaggle/input/notebooks/ibrahimjohar/02-train-dinov2/run_dinov2_vitb14/best.pth"
@@ -69,5 +69,6 @@
   4,
   4
  ],
- "torch_export_version": "2.11.0+cpu"
+ "torch_export_version": "2.11.0+cu128",
+ "int8_matrices": 98
 }

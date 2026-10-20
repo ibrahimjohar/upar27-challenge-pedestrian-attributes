@@ -1,12 +1,14 @@
 /usr/local/lib/python3.13/dist-packages/torch/__init__.py:2253: TracerWarning: Converting a tensor to a Python boolean might cause the trace to be incorrect. We can't record the data flow of Python values, so this value will be treated as a constant in the future. This means that the trace might not generalize to other inputs!
   if not condition:
-warning: exporting with torch 2.11.0+cpu, the evaluation uses 2.4.1
+warning: exporting with torch 2.11.0+cu128, the evaluation uses 2.4.1
 trace max abs diff: 0.00e+00
-/kaggle/working/submission_ensemble_clip_vitb16_dinov2_vitb14/upar_track1_submission.zip: 317.8 MB, files ['meta.json', 'metadata.yaml', 'model.pt', 'run.py']
-[run.py] torch 2.11.0+cpu, device cpu
-[run.py] model loaded in 0.4s
-load_model: 0.4s on cpu
-[run.py] 64 images, 2 images/s
-run.py vs eager: max prob diff 0.0027, flipped decisions 1/4080, predict_image matches: True
-speed: 2 images/s on cpu
+int8: 98 weight matrices
+/kaggle/working/submission_ensemble_clip_vitb16_dinov2_vitb14/upar_track1_submission.zip: 153.7 MB, files ['meta.json', 'metadata.yaml', 'model.pt', 'run.py', 'weights_int8.npz']
+[run.py] torch 2.11.0+cu128, device cuda
+[run.py] filled 98 int8 weight matrices
+[run.py] model loaded in 1.6s
+load_model: 1.6s on cuda
+[run.py] 64 images, 31 images/s
+run.py vs eager: max prob diff 0.0416, flipped decisions 3/4080, predict_image matches: False
+speed: 136 images/s on cuda
 done: /kaggle/working/submission_ensemble_clip_vitb16_dinov2_vitb14/upar_track1_submission.zip
