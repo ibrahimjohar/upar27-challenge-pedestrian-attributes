@@ -290,17 +290,305 @@ plt.savefig(f"{OUT}/examples.jpg", dpi=110)
 plt.show()
 '''),
     md("""
+# Part B: looking at the images
+
+The numbers above say what is in the labels. This part opens the images themselves: native sizes at true scale,
+colour and greyscale, what an average crop looks like, what the model's patches cover, the same attribute in each
+dataset, the rare attributes, some classic filters, and what the training augmentations actually produce.
+"""),
+    code('''
+import torch
+from PIL import ImageOps, ImageDraw
+from train import make_transforms, H, W
+
+def load(p, size=None):
+    with Image.open(os.path.join(DATA, p)) as im:
+        im = im.convert("RGB")
+        return im.resize(size, Image.BILINEAR) if size else im.copy()
+
+def show_row(ax_row, imgs, titles=None, fs=7):
+    for k, ax in enumerate(ax_row):
+        ax.axis("off")
+        if k < len(imgs):
+            ax.imshow(imgs[k], cmap="gray" if np.asarray(imgs[k]).ndim == 2 else None)
+            if titles:
+                ax.set_title(titles[k], fontsize=fs)
+
+allp = np.concatenate([splits["train"][0], splits["val"][0]])
+ally = np.concatenate([splits["train"][1], splits["val"][1]])
+allds = np.concatenate([splits["train"][2], splits["val"][2]])
+A = {a: j for j, a in enumerate(ATTRIBUTES)}
+rng = np.random.default_rng(0)
+
+def positives(attr, d=None, n=1):
+    m = ally[:, A[attr]] == 1
+    if d is not None:
+        m &= allds == d
+    idx = np.flatnonzero(m)
+    return [allp[i] for i in rng.choice(idx, min(n, len(idx)), replace=False)] if len(idx) else []
+'''),
+    md("""
+## 8. Native size, drawn at true scale
+
+One image per dataset at its real pixel size, next to the 256x128 version the model gets.
+Market1501 crops are all 128x64, so every one of them is upscaled 2x.
+"""),
+    code('''
+picks = {d: allp[rng.choice(np.flatnonzero(allds == d))] for d in DATASETS}
+natives = {d: load(p) for d, p in picks.items()}
+canvas_h = max(256, max(im.height for im in natives.values()))
+canvas = Image.new("RGB", (sum(im.width + W + 60 for im in natives.values()), canvas_h), "white")
+x = 0
+draw = ImageDraw.Draw(canvas)
+for d, im in natives.items():
+    canvas.paste(im, (x, canvas_h - im.height))
+    draw.text((x, 2), f"{d} {im.width}x{im.height}", fill="black")
+    x += im.width + 20
+    canvas.paste(im.resize((W, H), Image.BILINEAR), (x, canvas_h - H))
+    draw.text((x, 12), "256x128", fill="black")
+    x += W + 40
+plt.figure(figsize=(canvas.width / 80, canvas.height / 80))
+plt.imshow(canvas)
+plt.axis("off")
+plt.show()
+'''),
+    md("""
+## 9. Greyscale and night images
+
+Some cameras record in greyscale (night or infrared). On those, colour labels cannot be read from the image.
+An image counts as greyscale here when its three channels differ by less than 3 grey levels on average.
+"""),
+    code('''
+def channel_spread(p):
+    a = np.asarray(load(p, (64, 128)), dtype=np.float32)
+    return float(np.mean(np.abs(a[..., 0] - a[..., 1]) + np.abs(a[..., 1] - a[..., 2])) / 2)
+
+grey = {}
+for d in DATASETS:
+    spreads = np.asarray([channel_spread(p) for p in sample[d][:1500]])
+    grey[d] = (spreads < 3).mean()
+print("share of greyscale images:", {d: round(float(v), 3) for d, v in grey.items()})
+
+fig, axes = plt.subplots(1, 8, figsize=(13, 4))
+found = [p for p in sample["PA100k"][:3000] if channel_spread(p) < 3][:8]
+colour_idx = [j for j, a in enumerate(ATTRIBUTES) if "Color" in a]
+lookup = {p: i for i, p in enumerate(allp)}
+titles = []
+for p in found:
+    yy = ally[lookup[p]]
+    titles.append("\\n".join(ATTRIBUTES[j].replace("Body-Color-", "-") for j in colour_idx if yy[j])[:60])
+show_row(axes, [load(p, (W, H)) for p in found], titles)
+plt.suptitle("PA-100K greyscale images and the colour labels they carry", fontsize=10)
+plt.tight_layout()
+plt.show()
+'''),
+    md("""
+## 10. Colour casts
+
+Mean colour of each image (red vs blue minus green), per dataset. A camera with a colour cast shifts its whole cloud.
+"""),
+    code('''
+fig, ax = plt.subplots(1, 2, figsize=(12, 4.5))
+for d in DATASETS:
+    m = np.asarray([np.asarray(load(p, (32, 64)), dtype=np.float32).reshape(-1, 3).mean(0) for p in sample[d][:800]])
+    ax[0].scatter(m[:, 0] - m[:, 1], m[:, 2] - m[:, 1], s=4, alpha=0.4, label=d)
+    for c, col in enumerate("rgb"):
+        ax[1].hist(m[:, c], bins=40, histtype="step", color=col, ls=["-", "--", ":"][DATASETS.index(d)])
+ax[0].axhline(0, color="k", lw=0.5)
+ax[0].axvline(0, color="k", lw=0.5)
+ax[0].set_xlabel("mean R - G")
+ax[0].set_ylabel("mean B - G")
+ax[0].legend(markerscale=4)
+ax[1].set_title("per-image mean of each channel (solid Market, dashed PA-100K, dotted PETA)", fontsize=9)
+plt.tight_layout()
+plt.show()
+'''),
+    md("""
+## 11. Mean and standard deviation image
+
+Average of 1000 resized crops per dataset. A sharp mean silhouette means people are centred and scaled
+consistently; the std image shows where the variation is (background, legs, arms).
+"""),
+    code('''
+fig, axes = plt.subplots(2, len(DATASETS), figsize=(7, 7))
+for c, d in enumerate(DATASETS):
+    stack = np.stack([np.asarray(load(p, (W, H)), dtype=np.float32) for p in sample[d][:1000]])
+    axes[0, c].imshow(stack.mean(0).astype(np.uint8))
+    axes[0, c].set_title(f"{d} mean", fontsize=9)
+    axes[1, c].imshow(stack.std(0).mean(-1), cmap="magma")
+    axes[1, c].set_title("std", fontsize=9)
+for ax in axes.ravel():
+    ax.axis("off")
+plt.tight_layout()
+plt.show()
+'''),
+    md("""
+## 12. What one token sees
+
+CLIP ViT-B/16 cuts the 256x128 input into a 16x8 grid of 16x16 patches; DINOv2 ViT-B/14 uses an 18x9 grid
+of 14x14 patches. A head is only a couple of patches, sunglasses or a hat less than one.
+"""),
+    code('''
+fig, axes = plt.subplots(1, 6, figsize=(12, 5))
+ex = [p for d in DATASETS for p in positives("Accessory-Hat", d)]
+ex += [p for d in DATASETS for p in positives("Accessory-Glasses-Normal", d)]
+for ax, p in zip(axes, ex):
+    im = load(p, (W, H))
+    dr = ImageDraw.Draw(im)
+    for gx in range(0, W + 1, 16):
+        dr.line([(gx, 0), (gx, H)], fill=(255, 255, 0), width=1)
+    for gy in range(0, H + 1, 16):
+        dr.line([(0, gy), (W, gy)], fill=(255, 255, 0), width=1)
+    ax.imshow(im)
+    ax.axis("off")
+axes[0].set_title("hat", fontsize=9)
+axes[3].set_title("glasses", fontsize=9)
+plt.suptitle("16x16 patch grid (CLIP) on hat and glasses examples", fontsize=10)
+plt.tight_layout()
+plt.show()
+'''),
+    md("""
+## 13. The same attribute in each dataset
+
+Four positives per dataset for a few attributes. Differences here are differences in how each source looks
+and how it was labelled, which is what the model has to bridge.
+"""),
+    code('''
+for attr in ["Accessory-Backpack", "Accessory-Hat", "UpperBody-Color-Red", "LowerBody-Type-Skirt&Dress", "Age-Old"]:
+    fig, axes = plt.subplots(1, 12, figsize=(14, 3))
+    imgs, titles = [], []
+    for d in DATASETS:
+        for p in positives(attr, d, 4):
+            imgs.append(load(p, (W, H)))
+            titles.append(d)
+    show_row(axes, imgs, titles)
+    plt.suptitle(attr, fontsize=10)
+    plt.tight_layout()
+    plt.show()
+'''),
+    md("""
+## 14. The rarest attributes
+
+These are the attributes with well under 1% positives, which mA weights as much as any other.
+"""),
+    code('''
+for attr in ["LowerBody-Color-Purple", "LowerBody-Color-Orange", "Accessory-Glasses-Sun", "Hair-Length-Bald", "LowerBody-Color-Yellow"]:
+    idx = np.flatnonzero(ally[:, A[attr]] == 1)
+    fig, axes = plt.subplots(1, 10, figsize=(13, 3))
+    pick = rng.choice(idx, min(10, len(idx)), replace=False)
+    show_row(axes, [load(allp[i], (W, H)) for i in pick], [allds[i] for i in pick])
+    plt.suptitle(f"{attr}: {len(idx)} positives in train+val", fontsize=10)
+    plt.tight_layout()
+    plt.show()
+'''),
+    md("""
+## 15. Filters: what detail survives
+
+Greyscale, Sobel edge magnitude and Laplacian on one image per dataset, at native size and after resizing to
+256x128. Edges are what the early layers pick up, so this shows how much fine structure each camera gives.
+"""),
+    code('''
+def sobel(g):
+    kx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], np.float32)
+    pad = np.pad(g, 1, mode="edge")
+    gx = sum(kx[i, j] * pad[i:i + g.shape[0], j:j + g.shape[1]] for i in range(3) for j in range(3))
+    gy = sum(kx.T[i, j] * pad[i:i + g.shape[0], j:j + g.shape[1]] for i in range(3) for j in range(3))
+    return np.hypot(gx, gy)
+
+def laplacian(g):
+    pad = np.pad(g, 1, mode="edge")
+    return pad[:-2, 1:-1] + pad[2:, 1:-1] + pad[1:-1, :-2] + pad[1:-1, 2:] - 4 * g
+
+fig, axes = plt.subplots(len(DATASETS), 6, figsize=(11, 4.4 * len(DATASETS)))
+for r, d in enumerate(DATASETS):
+    im = natives[d]
+    g = np.asarray(im.convert("L"), dtype=np.float32)
+    gr = np.asarray(im.convert("L").resize((W, H), Image.BILINEAR), dtype=np.float32)
+    eq = np.asarray(ImageOps.equalize(im.resize((W, H), Image.BILINEAR)))
+    panels = [im, sobel(g), np.abs(laplacian(g)), sobel(gr), np.abs(laplacian(gr)), eq]
+    names = [f"{d} native {im.width}x{im.height}", "Sobel native", "|Laplacian| native",
+             "Sobel 256x128", "|Laplacian| 256x128", "histogram equalised"]
+    for c, (pnl, nm) in enumerate(zip(panels, names)):
+        axes[r, c].imshow(pnl, cmap="gray" if np.asarray(pnl).ndim == 2 else None)
+        axes[r, c].set_title(nm, fontsize=7)
+        axes[r, c].axis("off")
+plt.tight_layout()
+plt.show()
+
+#average log power spectrum per dataset, a blurry source has less energy away from the centre
+fig, axes = plt.subplots(1, len(DATASETS), figsize=(9, 4))
+for ax, d in zip(axes, DATASETS):
+    acc = np.zeros((H, W))
+    for p in sample[d][:500]:
+        g = np.asarray(load(p, (W, H)).convert("L"), dtype=np.float32)
+        acc += np.log1p(np.abs(np.fft.fftshift(np.fft.fft2(g - g.mean()))))
+    ax.imshow(acc / 500, cmap="viridis")
+    ax.set_title(f"{d} log spectrum", fontsize=9)
+    ax.axis("off")
+plt.tight_layout()
+plt.show()
+'''),
+    md("""
+## 16. What the training augmentations produce
+
+The first row is one image through the training transform used for every run (flip, pad and crop, brightness
+and contrast jitter, random erasing). The second row adds the camera degradation tried in the camaug run.
+The third row shows what hue jitter would do to a red top, which is why it is not used.
+"""),
+    code('''
+mean, std = (0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)
+undo = lambda t: np.clip(t.permute(1, 2, 0).numpy() * np.array(std) + np.array(mean), 0, 1)
+red = positives("UpperBody-Color-Red")[0]
+base = load(red, (W, H))
+basic = make_transforms(mean, std, True, "basic")
+camera = make_transforms(mean, std, True, "camera")
+torch.manual_seed(0)
+random.seed(0)
+fig, axes = plt.subplots(3, 7, figsize=(12, 10))
+show_row(axes[0], [base] + [undo(basic(base)) for _ in range(6)], ["original"] + ["basic"] * 6)
+show_row(axes[1], [base] + [undo(camera(base)) for _ in range(6)], ["original"] + ["camera"] * 6)
+hsv = np.asarray(base.convert("HSV")).copy()
+hue = []
+for shift in (0, 20, 45, 85, 130, 170, 210):
+    h = hsv.copy()
+    h[..., 0] = (h[..., 0].astype(int) + shift) % 256
+    hue.append(Image.fromarray(h, "HSV").convert("RGB"))
+show_row(axes[2], hue, [f"hue +{s}" for s in (0, 20, 45, 85, 130, 170, 210)])
+plt.tight_layout()
+plt.show()
+'''),
+    md("""
+## 17. Hardest-looking images
+
+Per dataset: the darkest, the blurriest (lowest Laplacian variance) and the most colour-cast crops in the sample.
+"""),
+    code('''
+fig, axes = plt.subplots(len(DATASETS), 9, figsize=(13, 4.2 * len(DATASETS)))
+for r, d in enumerate(DATASETS):
+    a = app[app.dataset == d].reset_index(drop=True)
+    ps = sample[d][:1500]
+    dark = a.nsmallest(3, "brightness").index
+    blur = a.nsmallest(3, "sharpness").index
+    rgb = np.asarray([np.asarray(load(ps[i], (32, 64)), dtype=np.float32).reshape(-1, 3).mean(0) for i in range(400)])
+    tint = np.argsort(-(np.abs(rgb[:, 0] - rgb[:, 1]) + np.abs(rgb[:, 2] - rgb[:, 1])))[:3]
+    imgs = [load(ps[i], (W, H)) for i in list(dark) + list(blur) + list(tint)]
+    show_row(axes[r], imgs, ["dark"] * 3 + ["blurry"] * 3 + ["colour cast"] * 3)
+    axes[r, 0].text(-15, H / 2, d, rotation=90, va="center", ha="right", fontsize=10)
+plt.tight_layout()
+plt.show()
+'''),
+    md("""
 ## What this changed in the approach
 
 | Observation | Decision |
 |---|---|
 | PA-100K is about 81% of the training images, Market1501 and PETA about 10% and 9% | dataset-balanced sampling (weights from the square root of the inverse dataset size), so the two small sources are seen more often without being repeated excessively |
-| 21 of 40 attributes are positive in under 5% of training images, 7 in under 1% (purple trousers 0.17%) | weighted BCE (Li et al. 2015) so rare positives count more; mA, half of the score, punishes a model that never predicts them |
+| 21 of 40 attributes are positive in under 5% of training images, 7 in under 1% (purple trousers 0.17%), and items like sunglasses or a hat cover less than one 16x16 patch (sections 12, 14) | weighted BCE (Li et al. 2015) so rare positives count more; mA, half of the score, punishes a model that never predicts them; per-attribute decision offsets tuned on validation |
 | five colour attributes are never positive in Market1501, one in PETA | scored per dataset and only on the attributes present there, which is how the challenge metric is computed |
-| crops are tall and narrow (about 2:1 or taller) and native sizes differ a lot between sources (section 5) | one fixed 256x128 (2:1) input instead of a square one; ViT position embeddings resampled to that 16x8 grid |
+| crops are tall and narrow: Market1501 is always 128x64, PA-100K has a median of 201x74 and PETA 160x74, and 75-100% of crops are shorter than 256 px (sections 5 and 8) | one fixed 256x128 (2:1) input instead of a square one, so most images are upscaled rather than squashed; ViT position embeddings resampled to that 16x8 grid |
 | no attribute depends on left vs right | horizontal flip is safe as augmentation and as test-time averaging |
-| 24 of 40 attributes are colours | mild brightness/contrast jitter only, no hue/saturation change, no greyscale |
-| brightness, contrast and sharpness differ clearly between the three sources | the hidden camera will differ again, so we leaned on pretrained backbones that have seen very varied images (CLIP, DINOv2) and tried a camera degradation augmentation |
+| 24 of 40 attributes are colours, and a hue shift turns a red top into an orange, green or purple one (section 16) | mild brightness/contrast jitter only, no hue/saturation change, no greyscale |
+| PA-100K is far sharper than the other two (median Laplacian variance 176 vs 48 and 46), Market1501 is the darkest, PETA has visible colour casts, and some PA-100K images are greyscale night shots that still carry colour labels (sections 6, 9, 10, 15, 17) | the hidden camera will differ again, so we leaned on pretrained backbones that have seen very varied images (CLIP, DINOv2) and tried a camera degradation augmentation (blur, downscaling, JPEG) to imitate the softer sources |
 | validation is half Market1501, while training is 81% PA-100K; PA-100K's validation split also has fewer short sleeves (44% vs 59%) | model selection uses the challenge formula (score per source, then averaged) so no single source decides; train and val images never overlap |
 | strong pairs such as trousers vs skirt (phi -0.98) and female vs long hair (0.63) | one shared 40-way head on a shared backbone, so these dependencies are learned jointly rather than per attribute |
 """),
