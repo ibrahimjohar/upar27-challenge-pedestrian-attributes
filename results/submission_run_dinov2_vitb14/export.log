@@ -1,0 +1,10 @@
+warning: exporting with torch 2.11.0+cpu, the evaluation uses 2.4.1
+trace max abs diff: 0.00e+00
+/kaggle/working/submission_run_dinov2_vitb14/upar_track1_submission.zip: 158.8 MB, files ['meta.json', 'metadata.yaml', 'model.pt', 'run.py']
+[run.py] torch 2.11.0+cpu, device cpu
+[run.py] model loaded in 0.4s
+load_model: 0.4s on cpu
+[run.py] 64 images, 2 images/s
+run.py vs eager: max prob diff 0.0024, flipped decisions 0/4080, predict_image matches: True
+speed: 2 images/s on cpu
+done: /kaggle/working/submission_run_dinov2_vitb14/upar_track1_submission.zip
