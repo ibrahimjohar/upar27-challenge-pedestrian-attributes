@@ -36,6 +36,8 @@ H, W = 256, 128
 BACKBONES = {
     "clip_vitb16": ("vit_base_patch16_clip_224.openai", {"img_size": (H, W)}),
     "dinov2_vitb14": ("vit_base_patch14_dinov2.lvd142m", {"img_size": (252, 126)}),
+    "vit_in21k": ("vit_base_patch16_224.augreg2_in21k_ft_in1k", {"img_size": (H, W)}),
+    "siglip_vitb16": ("vit_base_patch16_siglip_224.webli", {"img_size": (H, W)}),
     "convnext_tiny": ("convnext_tiny.fb_in22k_ft_in1k", {}),
     "convnext_small": ("convnext_small.fb_in22k_ft_in1k", {}),
     "resnet50": ("resnet50.a1_in1k", {}),
