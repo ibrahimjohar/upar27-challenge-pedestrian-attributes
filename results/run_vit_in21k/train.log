@@ -1,0 +1,61 @@
+train: 97669, val: 33407, device: cuda, gpus: 2
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+  ep 1 it 0/1526 loss 0.9356 lr 2.62e-07
+  ep 1 it 200/1526 loss 0.5649 lr 2.65e-05
+  ep 1 it 400/1526 loss 0.4233 lr 5.27e-05
+  ep 1 it 600/1526 loss 0.3560 lr 7.89e-05
+  ep 1 it 800/1526 loss 0.3167 lr 1.05e-04
+  ep 1 it 1000/1526 loss 0.2890 lr 1.31e-04
+  ep 1 it 1200/1526 loss 0.2683 lr 1.58e-04
+  ep 1 it 1400/1526 loss 0.2518 lr 1.84e-04
+ep 1 loss 0.2431 (7.2 min) | val avg 0.7336 mA 0.6805 inst_f1 0.7956 | Market1501 0.757 PA100k 0.732 PETA 0.711
+  ep 2 it 0/1526 loss 0.1459 lr 2.00e-04
+  ep 2 it 200/1526 loss 0.1383 lr 2.00e-04
+  ep 2 it 400/1526 loss 0.1333 lr 1.99e-04
+  ep 2 it 600/1526 loss 0.1286 lr 1.97e-04
+  ep 2 it 800/1526 loss 0.1247 lr 1.95e-04
+  ep 2 it 1000/1526 loss 0.1211 lr 1.92e-04
+  ep 2 it 1200/1526 loss 0.1178 lr 1.88e-04
+  ep 2 it 1400/1526 loss 0.1144 lr 1.84e-04
+ep 2 loss 0.1128 (7.2 min) | val avg 0.8436 mA 0.8128 inst_f1 0.8768 | Market1501 0.844 PA100k 0.832 PETA 0.855
+  ep 3 it 0/1526 loss 0.1072 lr 1.81e-04
+  ep 3 it 200/1526 loss 0.0894 lr 1.76e-04
+  ep 3 it 400/1526 loss 0.0863 lr 1.70e-04
+  ep 3 it 600/1526 loss 0.0849 lr 1.64e-04
+  ep 3 it 800/1526 loss 0.0837 lr 1.58e-04
+  ep 3 it 1000/1526 loss 0.0823 lr 1.51e-04
+  ep 3 it 1200/1526 loss 0.0806 lr 1.43e-04
+  ep 3 it 1400/1526 loss 0.0793 lr 1.36e-04
+ep 3 loss 0.0783 (7.2 min) | val avg 0.8599 mA 0.8353 inst_f1 0.8860 | Market1501 0.851 PA100k 0.845 PETA 0.883
+  ep 4 it 0/1526 loss 0.0679 lr 1.31e-04
+  ep 4 it 200/1526 loss 0.0670 lr 1.23e-04
+  ep 4 it 400/1526 loss 0.0658 lr 1.15e-04
+  ep 4 it 600/1526 loss 0.0639 lr 1.07e-04
+  ep 4 it 800/1526 loss 0.0630 lr 9.84e-05
+  ep 4 it 1000/1526 loss 0.0618 lr 9.02e-05
+  ep 4 it 1200/1526 loss 0.0605 lr 8.21e-05
+  ep 4 it 1400/1526 loss 0.0594 lr 7.40e-05
+ep 4 loss 0.0588 (7.2 min) | val avg 0.8631 mA 0.8388 inst_f1 0.8889 | Market1501 0.848 PA100k 0.846 PETA 0.895
+  ep 5 it 0/1526 loss 0.0540 lr 6.91e-05
+  ep 5 it 200/1526 loss 0.0497 lr 6.13e-05
+  ep 5 it 400/1526 loss 0.0486 lr 5.39e-05
+  ep 5 it 600/1526 loss 0.0478 lr 4.67e-05
+  ep 5 it 800/1526 loss 0.0470 lr 4.00e-05
+  ep 5 it 1000/1526 loss 0.0463 lr 3.36e-05
+  ep 5 it 1200/1526 loss 0.0459 lr 2.77e-05
+  ep 5 it 1400/1526 loss 0.0453 lr 2.22e-05
+ep 5 loss 0.0449 (7.2 min) | val avg 0.8590 mA 0.8316 inst_f1 0.8883 | Market1501 0.842 PA100k 0.842 PETA 0.894
+  ep 6 it 0/1526 loss 0.0449 lr 1.91e-05
+  ep 6 it 200/1526 loss 0.0391 lr 1.45e-05
+  ep 6 it 400/1526 loss 0.0400 lr 1.05e-05
+  ep 6 it 600/1526 loss 0.0397 lr 7.17e-06
+  ep 6 it 800/1526 loss 0.0393 lr 4.42e-06
+  ep 6 it 1000/1526 loss 0.0389 lr 2.33e-06
+  ep 6 it 1200/1526 loss 0.0390 lr 8.94e-07
+  ep 6 it 1400/1526 loss 0.0387 lr 1.32e-07
+ep 6 loss 0.0386 (7.2 min) | val avg 0.8546 mA 0.8243 inst_f1 0.8872 | Market1501 0.837 PA100k 0.837 PETA 0.890
+best epoch 4, val Challenge_Avg 0.8631
+plain            avg 0.8631  mA 0.8388  inst_f1 0.8889
+flip             avg 0.8634  mA 0.8390  inst_f1 0.8893
+flip + offsets   avg 0.8726  mA 0.8599  inst_f1 0.8859
+results saved to /kaggle/working/run_vit_in21k
