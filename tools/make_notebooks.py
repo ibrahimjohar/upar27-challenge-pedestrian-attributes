@@ -684,8 +684,20 @@ if SMOKE_TEST and not RESUMING:
     !cd {CODE} && python src/train.py --data-root /tmp/data --backbone {BACKBONE} --epochs 1 --limit 640 --batch-size 32 --workers 4 --out /tmp/smoke --resume none
 '''),
     code('''
+#run through Popen so the exit code is visible: -9 means the process was killed (usually out of RAM)
+WORKERS = 4
 flags = "--train-on-val" if TRAIN_ON_VAL else ""
-!cd {CODE} && python src/train.py --data-root /tmp/data --backbone {BACKBONE} --epochs {EPOCHS} --batch-size {BATCH} --lr {LR} --aug {AUG} --workers 4 --time-budget-hours {TIME_BUDGET_H} --out {OUT} {flags} 2>&1 | tee -a {OUT}/train.log
+cmd = (f"cd {CODE} && python src/train.py --data-root /tmp/data --backbone {BACKBONE} --epochs {EPOCHS} "
+       f"--batch-size {BATCH} --lr {LR} --aug {AUG} --workers {WORKERS} --time-budget-hours {TIME_BUDGET_H} --out {OUT} {flags}")
+with open(f"{OUT}/train.log", "a") as log:
+    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+        log.write(line)
+        log.flush()
+    proc.wait()
+print("exit code", proc.returncode)
+!free -g
 '''),
     code('''
 import pandas as pd
@@ -785,8 +797,319 @@ if PUSH_RESULTS and TOKEN:
 '''),
 ], gpu=True)
 
+#04 results analysis
+nb4 = notebook([
+    md("""
+# 04 Results analysis
+
+Accelerator: None, Internet: On, secret `GITHUB_TOKEN` attached.
+Inputs: notebook 01 (images), the `clip-vitb16-baseline` dataset and `02_train_dinov2` (their `val_logits.npz`),
+and `03_export_ensemble` (the final submission zip).
+
+All runs and submissions in one place: what was tried, how it scored on validation and on the hidden test set,
+which attributes fail and why, what the ensemble and the decision shift change, the final model's worst mistakes
+with their images, and a demo of the submitted zip.
+"""),
+    code(REPO_CFG + '''
+PUSH_RESULTS = True
+'''),
+    code(CLONE),
+    code(FIND_TAR),
+    code('''
+import sys, json, random, zipfile, importlib.util
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from PIL import Image
+sys.path.insert(0, f"{CODE}/src")
+sys.path.insert(0, f"{CODE}/tools")
+from common import ATTRIBUTES, dataset_of, leaderboard_metrics, pedestrian_metrics, valid_index
+from eval_ensemble import fast_calibrate, two_fold
+
+RES = f"{CODE}/results"
+OUT = "/kaggle/working/results_analysis"
 os.makedirs(OUT, exist_ok=True)
-for name, nb in [("00_data_exploration.ipynb", nb0), ("01_download_data.ipynb", nb1), ("02_train.ipynb", nb2), ("03_export_and_package.ipynb", nb3)]:
+DATA = "/tmp/data"
+
+def find(pattern):
+    hits = sorted(glob.glob(pattern, recursive=True))
+    assert hits, f"not found: {pattern}"
+    return hits[0]
+
+clip_npz = np.load(find("/kaggle/input/**/run_clip_vitb16/val_logits.npz"), allow_pickle=True)
+dino_npz = np.load(find("/kaggle/input/**/run_dinov2_vitb14/val_logits.npz"), allow_pickle=True)
+paths = np.asarray([str(p) for p in clip_npz["paths"]])
+assert (paths == np.asarray([str(p) for p in dino_npz["paths"]])).all()
+gt = clip_npz["gt"].astype(int)
+ds = np.asarray([dataset_of(p) for p in paths])
+DATASETS = sorted(set(ds))
+print(len(paths), "validation images", {d: int((ds == d).sum()) for d in DATASETS})
+'''),
+    md("""
+## 1. Every run and submission
+
+Validation numbers come from each run's `results/` folder. Hidden-test numbers are copied from the Codabench
+leaderboard (they cannot be recomputed locally).
+"""),
+    code('''
+runs = {"run_resnet50": "ResNet-50 (ImageNet-1k)", "run_vit_in21k": "ViT-B/16 (ImageNet-21k)",
+        "run_dinov2_vitb14": "DINOv2 ViT-B/14", "run_clip_vitb16": "CLIP ViT-B/16",
+        "run_clip_vitb16_camaug": "CLIP ViT-B/16 + camera aug"}
+rows = []
+for r, name in runs.items():
+    if not os.path.exists(f"{RES}/{r}/results_summary.csv"):
+        continue
+    s = pd.read_csv(f"{RES}/{r}/results_summary.csv")
+    s = s[s.exclude_absent].set_index("variant")
+    h = pd.read_csv(f"{RES}/{r}/history.csv")
+    cfg = json.load(open(f"{RES}/{r}/config.json"))
+    rows.append({"model": name, "epochs": cfg["epochs"], "lr": cfg["lr"],
+                 "best_epoch": int(h.val_Challenge_Avg.idxmax()) + 1, "min/epoch": round(h.minutes.mean(), 1),
+                 "val plain": s.loc["plain", "Challenge_Avg"], "val flip": s.loc["flip", "Challenge_Avg"],
+                 "val flip+offsets": s.loc["flip + offsets", "Challenge_Avg"],
+                 "Market1501": s.loc["flip + offsets", "Market1501_Challenge_Avg"],
+                 "PA100k": s.loc["flip + offsets", "PA100k_Challenge_Avg"],
+                 "PETA": s.loc["flip + offsets", "PETA_Challenge_Avg"]})
+val_table = pd.DataFrame(rows)
+val_table.to_csv(f"{OUT}/validation_runs.csv", index=False)
+display(val_table)
+
+test_table = pd.DataFrame([
+    ["sub02", "CLIP ViT-B/16", 0.7766, 0.7787, 0.5766, 0.7469, 0.8186, 0.7746],
+    ["sub03", "CLIP refit on train+val", 0.7679, 0.7656, 0.5770, 0.7501, 0.8041, 0.7702],
+    ["sub04", "CLIP + camera aug", 0.7701, 0.7719, 0.5768, 0.7438, 0.8085, 0.7684],
+    ["sub05", "DINOv2 ViT-B/14", 0.7733, 0.7727, 0.5887, 0.7553, 0.8068, 0.7738],
+    ["sub06", "CLIP + DINOv2 fp16 (318 MB, rejected by the platform)", None, None, None, None, None, None],
+    ["sub07", "CLIP + DINOv2, int8 weights", 0.7816, 0.7795, 0.5959, 0.7642, 0.8172, 0.7836],
+    ["sub08", "sub07 + shift 0.5 (final)", 0.7833, 0.7873, 0.5907, 0.7401, 0.8385, 0.7794],
+    ["#1", "best leaderboard entry", 0.8021, 0.8098, 0.5938, 0.7591, 0.8483, 0.7945],
+], columns=["submission", "model", "score", "mA", "label_F1", "inst_prec", "inst_rec", "inst_F1"])
+test_table.to_csv(f"{OUT}/test_submissions.csv", index=False)
+display(test_table)
+'''),
+    md("""
+## 2. Learning curves
+"""),
+    code('''
+fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+for r, name in runs.items():
+    if not os.path.exists(f"{RES}/{r}/history.csv"):
+        continue
+    h = pd.read_csv(f"{RES}/{r}/history.csv")
+    ax[0].plot(h.epoch, h.train_loss, marker="o", label=name)
+    ax[1].plot(h.epoch, h.val_Challenge_Avg, marker="o", label=name)
+ax[0].set_title("training loss")
+ax[1].set_title("validation Challenge score")
+ax[1].set_ylim(0.7, 0.89)
+for a in ax:
+    a.set_xlabel("epoch")
+    a.grid(alpha=0.3)
+ax[1].legend()
+plt.tight_layout()
+plt.savefig(f"{OUT}/learning_curves.png", dpi=130)
+plt.show()
+'''),
+    md("""
+## 3. Per attribute
+
+Label mA per attribute (averaged over the sources that use it) for CLIP, DINOv2 and their ensemble, next to the
+training positive rate from notebook 00.
+"""),
+    code('''
+off = np.asarray(json.load(open(f"{RES}/ensemble_clip_dinov2/offsets.json"))["offsets"])
+off_shift = np.asarray(json.load(open(f"{RES}/ensemble_clip_dinov2/offsets_shift050.json"))["offsets"])
+z_clip, z_dino = clip_npz["logits"].astype(float), dino_npz["logits"].astype(float)
+z_ens = 0.5 * z_clip + 0.5 * z_dino
+clip_off = np.asarray(json.load(open(f"{RES}/run_clip_vitb16/offsets.json"))["offsets"])
+dino_off = np.asarray(json.load(open(f"{RES}/run_dinov2_vitb14/offsets.json"))["offsets"])
+preds = {"CLIP": z_clip + clip_off > 0, "DINOv2": z_dino + dino_off > 0, "ensemble": z_ens + off > 0,
+         "ensemble + shift": z_ens + off_shift > 0}
+
+def per_attribute_ma(pred):
+    acc = {a: [] for a in ATTRIBUTES}
+    for d in DATASETS:
+        m = ds == d
+        idx = valid_index(gt[m])
+        r = pedestrian_metrics(gt[m], pred[m], idx)
+        for k, j in enumerate(idx):
+            acc[ATTRIBUTES[j]].append(r["label_ma"][k])
+    return {a: float(np.mean(v)) for a, v in acc.items()}
+
+rate = pd.read_csv(f"{RES}/data_exploration/positive_rate_train.csv", index_col=0)["all"]
+attr = pd.DataFrame({k: per_attribute_ma(v) for k, v in preds.items()})
+attr["train_pos_rate"] = rate.reindex(attr.index)
+attr["dino_minus_clip"] = attr.DINOv2 - attr.CLIP
+attr = attr.sort_values("ensemble")
+attr.round(4).to_csv(f"{OUT}/per_attribute.csv")
+print("weakest attributes for the ensemble:")
+display(attr.head(10).round(3))
+print("largest CLIP / DINOv2 differences:")
+display(attr.sort_values("dino_minus_clip").iloc[[0, 1, 2, 3, 4, -5, -4, -3, -2, -1]][["CLIP", "DINOv2", "dino_minus_clip"]].round(3))
+
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.scatter(attr.train_pos_rate, attr.CLIP, label="CLIP", s=22)
+ax.scatter(attr.train_pos_rate, attr.DINOv2, label="DINOv2", s=22, marker="s")
+ax.scatter(attr.train_pos_rate, attr.ensemble, label="ensemble", s=26, marker="^")
+for a in attr.index[:6]:
+    ax.annotate(a, (attr.train_pos_rate[a], attr.ensemble[a]), fontsize=7, xytext=(4, -3), textcoords="offset points")
+ax.set_xscale("log")
+ax.set_xlabel("training positive rate")
+ax.set_ylabel("label mA (val)")
+ax.legend()
+ax.grid(alpha=0.3)
+plt.tight_layout()
+plt.savefig(f"{OUT}/per_attribute.png", dpi=130)
+plt.show()
+'''),
+    md("""
+## 4. Per dataset and the ensemble
+
+Scores per source dataset for each model, then the ensemble comparison with offsets fitted on one half of
+validation and scored on the other (2-fold), which is the fair comparison.
+"""),
+    code('''
+rows = []
+for name, p in preds.items():
+    m = leaderboard_metrics(gt, p, ds)
+    row = {"model": name, "score": m["Challenge_Avg"], "mA": m["mA"], "inst_F1": m["Instance_F1"],
+           "precision": m["Instance_Prec"], "recall": m["Instance_Rec"]}
+    row.update({d: m["per_dataset"][d]["Challenge_Avg"] for d in DATASETS})
+    rows.append(row)
+per_ds = pd.DataFrame(rows).round(4)
+per_ds.to_csv(f"{OUT}/per_dataset.csv", index=False)
+display(per_ds)
+
+ens_rows = []
+for name, z in [("CLIP", z_clip), ("DINOv2", z_dino), ("CLIP + DINOv2", z_ens)]:
+    ens_rows.append({"model": name, "no offsets": leaderboard_metrics(gt, z > 0, ds)["Challenge_Avg"],
+                     "offsets, 2-fold": two_fold(z, gt, ds)})
+display(pd.DataFrame(ens_rows).round(4))
+'''),
+    md("""
+## 5. The decision shift: validation against the hidden test set
+
+A constant added to every logit of the ensemble, on top of the fitted offsets.
+"""),
+    code('''
+shift_rows = []
+for delta in [0, 0.25, 0.5, 0.75, 1.0]:
+    m = leaderboard_metrics(gt, z_ens + off + delta > 0, ds)
+    shift_rows.append({"shift": delta, "score": m["Challenge_Avg"], "mA": m["mA"], "inst_F1": m["Instance_F1"],
+                       "precision": m["Instance_Prec"], "recall": m["Instance_Rec"]})
+shift_val = pd.DataFrame(shift_rows).round(4)
+display(shift_val)
+test_pts = test_table.set_index("submission").loc[["sub07", "sub08"]]
+
+fig, ax = plt.subplots(1, 2, figsize=(10, 3.5), sharey=True)
+for k in ["score", "mA", "inst_F1"]:
+    ax[0].plot(shift_val["shift"], shift_val[k] - shift_val[k][0], marker="o", label=k)
+for k, col in [("score", "score"), ("mA", "mA"), ("inst_F1", "inst_F1")]:
+    v = test_pts[col].values
+    ax[1].plot([0, 0.5], v - v[0], marker="o", label=k)
+ax[0].set_title("validation")
+ax[1].set_title("hidden test (sub07 vs sub08)")
+for a in ax:
+    a.axhline(0, color="grey", lw=0.8)
+    a.set_xlabel("shift")
+    a.grid(alpha=0.3)
+ax[0].set_ylabel("change vs. no shift")
+ax[0].legend()
+plt.tight_layout()
+plt.savefig(f"{OUT}/shift.png", dpi=130)
+plt.show()
+'''),
+    md("""
+## 6. Where the final model goes wrong
+
+Predictions of the final rule (ensemble + offsets + shift) on validation. First the attributes it most often
+predicts wrongly, then the validation images with the lowest per-image F1 in each dataset, with the attributes it
+added (false positives) and missed (false negatives).
+"""),
+    code('''
+final = preds["ensemble + shift"]
+fp = (final & (gt == 0)).sum(0)
+fn = (~final & (gt == 1)).sum(0)
+err = pd.DataFrame({"false_pos": fp, "false_neg": fn, "positives": gt.sum(0)}, index=ATTRIBUTES)
+err["fn_share_of_positives"] = (err.false_neg / err.positives.clip(lower=1)).round(3)
+print("most false positives:")
+display(err.sort_values("false_pos", ascending=False).head(8))
+print("most missed positives (relative to how many exist):")
+display(err[err.positives >= 50].sort_values("fn_share_of_positives", ascending=False).head(8))
+err.to_csv(f"{OUT}/errors_per_attribute.csv")
+
+inter = (final & (gt == 1)).sum(1)
+prec = inter / np.maximum(final.sum(1), 1)
+rec = inter / np.maximum(gt.sum(1), 1)
+f1 = 2 * prec * rec / np.maximum(prec + rec, 1e-9)
+short = lambda a: a.replace("UpperBody-", "U-").replace("LowerBody-", "L-").replace("Accessory-", "").replace("Color-", "")
+
+fig, axes = plt.subplots(len(DATASETS), 6, figsize=(14, 5.2 * len(DATASETS)))
+for r, d in enumerate(DATASETS):
+    idx = np.flatnonzero(ds == d)
+    worst = idx[np.argsort(f1[idx])[:6]]
+    for c, i in enumerate(worst):
+        with Image.open(os.path.join(DATA, paths[i])) as im:
+            axes[r, c].imshow(im.convert("RGB").resize((128, 256)))
+        added = [short(ATTRIBUTES[j]) for j in np.flatnonzero(final[i] & (gt[i] == 0))][:4]
+        missed = [short(ATTRIBUTES[j]) for j in np.flatnonzero(~final[i] & (gt[i] == 1))][:4]
+        axes[r, c].set_title(f"F1 {f1[i]:.2f}\\n+ " + ", ".join(added) + "\\n- " + ", ".join(missed), fontsize=7)
+        axes[r, c].axis("off")
+    axes[r, 0].text(-20, 128, d, rotation=90, va="center", ha="right", fontsize=11)
+plt.tight_layout()
+plt.savefig(f"{OUT}/worst_examples.jpg", dpi=100)
+plt.show()
+'''),
+    md("""
+## 7. Demo: the submitted model
+
+Loads `run.py` and the model from the final submission zip exactly as the challenge server does, and predicts
+attributes for a few random validation images. Shown are the attributes predicted as present (probability above
+0.5), marked against the ground truth.
+"""),
+    code('''
+zip_path = find("/kaggle/input/**/*shift050*/upar_track1_submission.zip")
+demo_dir = "/tmp/final_submission"
+shutil.rmtree(demo_dir, ignore_errors=True)
+zipfile.ZipFile(zip_path).extractall(demo_dir)
+spec = importlib.util.spec_from_file_location("submission_run", f"{demo_dir}/run.py")
+run = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(run)
+run.load_model()
+
+random.seed(7)
+pick = random.sample(range(len(paths)), 6)
+samples = [{"index": k, "image": paths[i], "image_path": os.path.join(DATA, paths[i]), "attribute_names": ATTRIBUTES}
+           for k, i in enumerate(pick)]
+probs = np.asarray(run.predict_batch(samples))
+
+fig, axes = plt.subplots(1, 6, figsize=(16, 6))
+for ax, s, p, i in zip(axes, samples, probs, pick):
+    with Image.open(s["image_path"]) as im:
+        ax.imshow(im.convert("RGB").resize((128, 256)))
+    lines = []
+    for j in np.argsort(-p):
+        if p[j] < 0.5:
+            break
+        mark = "ok" if gt[i, j] == 1 else "x"
+        lines.append(f"{short(ATTRIBUTES[j])} {p[j]:.2f} {mark}")
+    missed = [short(ATTRIBUTES[j]) for j in np.flatnonzero((gt[i] == 1) & (p < 0.5))]
+    if missed:
+        lines.append("missed: " + ", ".join(missed))
+    ax.set_title("\\n".join(lines), fontsize=7, loc="left")
+    ax.axis("off")
+plt.tight_layout()
+plt.savefig(f"{OUT}/demo.jpg", dpi=100)
+plt.show()
+'''),
+    code('''
+if PUSH_RESULTS and TOKEN:
+    !python {CODE}/tools/push_results.py --repo {CODE} --run-dir {OUT} --name results_analysis --message "results analysis"
+!ls -lh {OUT}
+'''),
+], gpu=False)
+
+os.makedirs(OUT, exist_ok=True)
+for name, nb in [("00_data_exploration.ipynb", nb0), ("01_download_data.ipynb", nb1), ("02_train.ipynb", nb2), ("03_export_and_package.ipynb", nb3), ("04_results_analysis.ipynb", nb4)]:
     with open(os.path.join(OUT, name), "w", encoding="utf-8") as fh:
         json.dump(nb, fh, indent=1)
     print("wrote", name)

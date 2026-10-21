@@ -110,6 +110,20 @@ def make_transforms(mean, std, train: bool, aug: str = "basic"):
     return T.Compose(steps)
 
 
+def resources():
+    #host ram and peak gpu memory, to see what runs out when a run is killed
+    out = []
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        out.append(f"ram {vm.used / 1e9:.1f}/{vm.total / 1e9:.0f} GB")
+    except ImportError:
+        pass
+    if torch.cuda.is_available():
+        out.append("gpu " + " ".join(f"{torch.cuda.max_memory_allocated(i) / 1e9:.1f}" for i in range(torch.cuda.device_count())) + " GB")
+    return ", ".join(out)
+
+
 def balanced_weights(paths, power: float):
     #weight of an image = n_dataset ** -power, power=0.5 gives sqrt balancing
     ds = [dataset_of(p) for p in paths]
@@ -211,6 +225,8 @@ def parse_args():
     ap.add_argument("--balance-power", type=float, default=0.5)
     ap.add_argument("--aug", default="basic", choices=["basic", "camera"])
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--no-amp", action="store_true", help="train in fp32")
+    ap.add_argument("--single-gpu", action="store_true", help="do not use DataParallel")
     ap.add_argument("--train-on-val", action="store_true", help="train on train+val, no validation")
     ap.add_argument("--limit", type=int, default=0, help="use N random train and val images (debugging)")
     ap.add_argument("--seed", type=int, default=42)
@@ -275,9 +291,10 @@ def main():
         return 0.5 * (1 + math.cos(math.pi * progress))
 
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
-    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
+    use_amp = device.type == "cuda" and not args.no_amp
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     ema = EMA(model, args.ema_decay)
-    net = nn.DataParallel(model) if torch.cuda.device_count() > 1 else model
+    net = nn.DataParallel(model) if torch.cuda.device_count() > 1 and not args.single_gpu else model
 
     config = dict(vars(args), mean=mean, std=std, H=H, W=W, attributes=ATTRIBUTES)
     json.dump(config, open(os.path.join(args.out, "config.json"), "w"), indent=1)
@@ -336,7 +353,7 @@ def main():
         for it in range(skip, len(tl)):
             x, y = next(loader_it)
             x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-            with torch.autocast(device.type, enabled=device.type == "cuda"):
+            with torch.autocast(device.type, enabled=use_amp):
                 loss = criterion(net(x), y)
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
@@ -351,7 +368,7 @@ def main():
 
             if it % 200 == 0:
                 lr = max(g["lr"] for g in opt.param_groups)
-                print(f"  ep {ep} it {it}/{len(tl)} loss {ep_loss / ep_n:.4f} lr {lr:.2e}", flush=True)
+                print(f"  ep {ep} it {it}/{len(tl)} loss {ep_loss / ep_n:.4f} lr {lr:.2e} | {resources()}", flush=True)
             if budget_s and time.time() - start_time > budget_s:
                 save_state(ep - 1, it + 1, ep_loss, ep_n)
                 with open(os.path.join(args.out, "PAUSED"), "w") as fh:
