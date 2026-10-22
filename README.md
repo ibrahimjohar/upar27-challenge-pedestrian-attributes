@@ -21,8 +21,10 @@ submission/
 notebooks/              Kaggle notebooks (they clone this repo)
   00_data_exploration   label statistics and visual probing of the three datasets (executed, with notes)
   01_download_data      downloads the challenge data
-  02_train              trains one backbone, resumable
-  03_export_and_package builds the Codabench zip (single model or ensemble)
+  02_train              template that trains one backbone, resumable
+  02_train_<model>      executed training runs, one per model, with full logs and curves
+  03_export_and_package template that builds the Codabench zip (single model or ensemble)
+  03_export_<model>     executed exports, including the final submission (03_export_ensemble_clip_dinov2_shift050)
   04_results_analysis   all runs and submissions, per-attribute errors, ensemble, shift, demo (executed, with notes)
 tools/
   push_results.py       copies small result files from Kaggle into results/ and pushes them
