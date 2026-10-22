@@ -1,8 +1,12 @@
 # UPAR 2027 Track 1: Pedestrian Attribute Recognition under Domain Shift
 
-Computer Vision Assignment 2, FAST-NUCES Karachi. Entry to Track 1 of the
+Computer Vision Assignment 2. Entry to Track 1 of the
 [UPAR Challenge 2027](https://www.codabench.org/competitions/18180/) at the Real-World Surveillance
 workshop (WACV 2027).
+
+Group members:
+- Ibrahim Johar Farooqi (23K-0074)
+- Syed Ukkashah Ahmed (23K-0055)
 
 **Task:** for every pedestrian crop, predict 40 binary attributes (age, gender, hair, clothing type
 and colour, accessories). Training data comes from Market1501, PA-100K and PETA. The hidden test
@@ -31,7 +35,11 @@ tools/
   eval_ensemble.py      scores ensembles and offsets from saved validation logits
   make_notebooks.py     regenerates notebooks/
 results/                metrics, histories, per-attribute tables, curves, logs (pushed from Kaggle)
-report/                 report and slides
+report/
+  CV_Assignment_2_Report.pdf  course report (3 pages)
+  proof_of_submission.pdf     Codabench submission and leaderboard screenshots
+  presentation.pdf            demo presentation slides
+  latex/                      LaTeX sources and figures for the report and the proof
 ```
 
 Weights (`*.pth`), data and submission zips are **not** in git (see `.gitignore`). They live in
