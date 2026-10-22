@@ -1,0 +1,147 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+%camera-ready mode of the WACV 2027 kit, with author names
+\usepackage{wacv}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage[breaklinks,colorlinks,allcolors=blue]{hyperref}
+
+\def\wacvPaperID{*****}
+\def\paperID{*****}
+\def\confName{WACV}
+\def\confYear{2027}
+\providecommand{\etal}{\emph{et al.}}
+
+\begin{document}
+
+\title{UPAR Challenge 2027, Track 1: Pedestrian Attribute Recognition\\on Unseen Cameras (Assignment 2 Report)}
+
+\author{Ibrahim Johar Farooqi (23K-0074) \qquad Syed Ukkashah Ahmed (23K-0055)\\
+Computer Vision, Fall 2026, FAST-NUCES Karachi\\
+{\small Code: \url{https://github.com/ibrahimjohar/upar27-challenge-pedestrian-attributes}}
+}
+
+\maketitle
+
+\section{Task and approach}
+
+We entered Track~1 of the UPAR Challenge 2027 (Real-World Surveillance workshop, WACV 2027). Given a cropped image of a person, the model predicts 40 binary attributes: gender, age group, hair, clothing type and colour, and accessories. Training data comes from Market1501, PA-100K and PETA, harmonised by UPAR~\cite{specker2023upar,cormier2023challenge} (97{,}669 training and 33{,}407 validation images). The test set is hidden and comes from cameras not in the training data. Submissions are code: our packaged model runs on the organisers' A10 GPU on 29{,}248 test crops, offline, within five minutes. The score is the harmonic mean of label-based mean accuracy (mA) and instance-based F1.
+
+We fine-tuned several pretrained backbones with the same recipe, compared them, averaged the two whose errors differed most, and then tuned the decision thresholds. Everything was trained on the free Kaggle tier (2$\times$T4). Data exploration, training and export are notebooks in the repository linked above, and each run pushes its results there.
+
+\section{Data exploration}
+
+Before training we went through the labels and the images in a separate notebook. What we found, and what we did about it:
+\begin{itemize}
+\item PA-100K is 81\% of training but Market1501 is 49\% of validation, so we sample sources with weight $n_d^{-1/2}$ and select models on the per-source average used by the metric.
+\item 21 attributes are positive in fewer than 5\% of images, and purple lower-body clothing in only 0.17\%. The loss is weighted for this imbalance.
+\item Crops are tall (height/width 2.0--2.7) and mostly under 256\,px high, which is why the input is $256{\times}128$.
+\item 24 attributes are colours. A hue shift would turn a red top green or blue, so we left out hue and greyscale augmentation.
+\item The sources look different: PA-100K is 3.7$\times$ sharper, Market1501 darker, and PETA has colour casts. The same label also covers different objects, for example sun hats in Market1501 and caps in PA-100K (Fig.~\ref{fig:same}).
+\item Glasses are smaller than one $16{\times}16$ patch, so at this resolution the model has very few pixels to find them in.
+\end{itemize}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/same_hat.png}\\[1mm]
+\includegraphics[width=\linewidth]{figs/same_red.png}
+\caption{Training images labelled \emph{hat} (top) and \emph{red upper-body clothing} (bottom), four from each source dataset. The kind of hat, the shade of red and the image quality all change with the source.}
+\label{fig:same}
+\end{figure*}
+
+\section{Methodology}
+
+\paragraph{Model.} Each model is a pretrained backbone from timm with one linear layer that outputs 40 logits. For the ViTs we resample the position embeddings to the $256{\times}128$ input. We compared two CNNs, ResNet-50 (ImageNet-1k) and ConvNeXt-S~\cite{liu2022convnext} (ImageNet-22k), with three transformers, ViT-B/16 (ImageNet-21k), DINOv2 ViT-B/14~\cite{oquab2024dinov2} and CLIP ViT-B/16~\cite{radford2021clip}.
+
+\paragraph{Training.} We use weighted BCE~\cite{li2015deepmar} (weights $e^{1-p_j}$ / $e^{p_j}$) and source-balanced sampling. Augmentation is flip, pad-and-crop, brightness/contrast jitter and random erasing. The optimiser is AdamW (lr $2{\times}10^{-4}$; $10^{-4}$ for DINOv2, $4{\times}10^{-4}$ for ConvNeXt-S, $10^{-3}$ for ResNet-50), with layer-wise lr decay 0.65, one warm-up epoch then cosine decay, batch 64, mixed precision and an EMA of the weights. We train for six epochs and keep the best epoch on validation. The notebooks checkpoint every 20 minutes and resume automatically after a session ends.
+
+\paragraph{Inference.} We average the logits of the image and its mirror image. Per-attribute logit offsets (equivalent to per-attribute thresholds) are fitted on validation by coordinate ascent. The final model averages the logits of CLIP and DINOv2 and adds a uniform shift of $+0.5$ to every attribute (Sec.~\ref{sec:eval}).
+
+\paragraph{Packaging.} Preprocessing, both networks, flip averaging, the offsets and the sigmoid are traced into one TorchScript module. We store the large weight matrices as int8 with one scale per row, so the ensemble archive is 154\,MB.
+
+\section{Evaluation}
+\label{sec:eval}
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llcc}
+\toprule
+Backbone & Pretraining & Plain & +flip/offsets \\
+\midrule
+ResNet-50 & ImageNet-1k (labels) & .812 & .826 \\
+ConvNeXt-S & ImageNet-22k (labels) & .830 & .845 \\
+ViT-B/16 & ImageNet-21k (labels) & .863 & .873 \\
+DINOv2 ViT-B/14 & 142M images (self-sup.) & .873 & .890 \\
+CLIP ViT-B/16 & 400M image--text pairs & \textbf{.878} & \textbf{.891} \\
+\midrule
+\multicolumn{2}{l}{CLIP + DINOv2 ensemble} & .880 & \textbf{.895} \\
+\bottomrule
+\end{tabular}
+\caption{Validation Challenge score, one training recipe for all. ``Plain'' uses no offsets and, for single models, no flip averaging.}
+\label{tab:val}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lccccc}
+\toprule
+Submission & Score & mA & Prec. & Rec. & F1 \\
+\midrule
+CLIP & .7766 & .7787 & .7469 & .8186 & .7746 \\
+CLIP refit on train+val & .7679 & .7656 & .7501 & .8041 & .7702 \\
+CLIP + camera aug. & .7701 & .7719 & .7438 & .8085 & .7684 \\
+DINOv2 & .7733 & .7727 & .7553 & .8068 & .7738 \\
+CLIP + DINOv2 & .7816 & .7795 & \textbf{.7642} & .8172 & \textbf{.7836} \\
+\quad + shift 0.5 (final) & \textbf{.7833} & \textbf{.7873} & .7401 & \textbf{.8385} & .7794 \\
+\midrule
+Leaderboard \#1 & .8021 & .8098 & .7591 & .8483 & .7945 \\
+\bottomrule
+\end{tabular}
+\caption{Hidden-test results from Codabench (instance precision, recall and F1).}
+\label{tab:test}
+\end{table}
+
+\paragraph{Backbones.} Table~\ref{tab:val} separates the architecture from the pretraining data. ConvNeXt-S and ViT-B/16 had the same ImageNet-21k pretraining, and the transformer is 0.028 better and wins on 39 of the 40 attributes, most clearly on attributes that need the whole figure (``other'' top colour, old age, bags). With the architecture fixed to ViT-B, moving to DINOv2 or CLIP pretraining adds a further 0.02. ConvNeXt-S is also smaller (50M vs.\ 86M parameters) and its learning rate was not tuned, so part of the gap may come from that. The CNNs learn more slowly (best epochs 5 and 6), while the ViTs peak at epoch 4 and then overfit.
+
+\paragraph{Complementary errors.} CLIP and DINOv2 have almost the same average score and get different attributes wrong. DINOv2 is better on garment shape and carried objects (bag, backpack, skirt, trousers). CLIP is better on colours, age and baldness. Averaging them gains 0.0045 on validation (offsets fitted on one half of validation, scored on the other), while averaging two CLIP models gains only 0.001. On the hidden test set the ensemble gains 0.005 over the best single model (Table~\ref{tab:test}).
+
+\paragraph{Under-confidence on unseen cameras.} Test recall (0.80--0.82) is far below validation recall (0.92), and the top entries have higher recall at similar precision. Adding a constant to every logit is score-neutral on validation (Fig.~\ref{fig:shift}), but on the test set $+0.5$ raises mA by 0.008 and recall by 0.021 for a net gain of 0.002. Our reading is that the models are less confident on the new cameras, and a lower threshold makes up for some of that.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/shift.pdf}
+\caption{Change in score, mA and instance F1 when a constant is added to every logit of the ensemble: validation (left) vs.\ hidden test (right).}
+\label{fig:shift}
+\end{figure}
+
+\paragraph{Final result.} Our final submission (Codabench user \texttt{ibrahimjohar}, submission 1005773) scores 0.7833 (mA 0.7873, instance F1 0.7794), 35th on the leaderboard at the time of writing. Screenshots of the submission and the leaderboard are attached as proof.
+
+\section{Challenges}
+
+The biggest problem was the domain gap. Validation scores (0.89) were 0.11 above the hidden test set (0.78), so validation told us which idea was better but not what it would score.
+
+Two ideas that looked sensible on paper made the test score worse. Refitting CLIP on train+val cost 0.009, because the refit model was more confident and the offsets we had fitted for the old model no longer suited it. Simulated camera degradation (blur, downscaling, JPEG) cost 0.007.
+
+Getting a submission to run took several attempts. Our first upload hung for hours, and a simpler single-threaded \texttt{run.py} that logs its progress fixed it. The first ensemble archive (318\,MB) was rejected before it ran, which is why we moved to int8 weight storage. Kaggle's Python could not install the evaluation's PyTorch 2.4.1, so we exported with a newer version and then checked that the exported model loads in 2.4.1 and makes the same decisions.
+
+Compute was limited to the free GPU quota (30 hours a week, two sessions at a time), so the notebooks save resumable checkpoints and we ran exports on CPU whenever the GPU queue was long. ConvNeXt-S crashed twice in its first epoch. Logging showed host memory growing by about 11\,GB per 200 steps, with each step 20$\times$ slower, but only when the batch was split over two GPUs. On one GPU it trained normally.
+
+Some labels are hard to trust. Several rare colour labels are ambiguous even by eye, and on nearly colourless night images the colour labels follow brightness rather than hue.
+
+\section{Possible improvements}
+
+Higher input resolution and attention to small regions (head, hands) should help glasses, hats and other small accessories, but an ensemble would need a lighter backbone to stay within five minutes. Training several seeds would make the comparisons more certain. A held-out source dataset (for example, train on two sources and validate on the third) would give a validation signal closer to the unseen test camera, and could be used to choose the uniform shift without consulting the leaderboard. Distilling the ensemble into one model would also free time for higher resolution.
+
+{\small
+\bibliographystyle{ieee_fullname}
+\bibliography{refs}
+}
+
+\end{document}
