@@ -687,6 +687,9 @@ if SMOKE_TEST and not RESUMING:
 #run through Popen so the exit code is visible: -9 means the process was killed (usually out of RAM)
 WORKERS = 4
 flags = "--train-on-val" if TRAIN_ON_VAL else ""
+#convnext leaks host memory and slows down 20x when the batch is split over two gpus, one gpu works
+if BACKBONE.startswith("convnext"):
+    flags += " --single-gpu"
 cmd = (f"cd {CODE} && python src/train.py --data-root /tmp/data --backbone {BACKBONE} --epochs {EPOCHS} "
        f"--batch-size {BATCH} --lr {LR} --aug {AUG} --workers {WORKERS} --time-budget-hours {TIME_BUDGET_H} --out {OUT} {flags}")
 with open(f"{OUT}/train.log", "a") as log:
@@ -854,7 +857,7 @@ leaderboard (they cannot be recomputed locally).
     code('''
 runs = {"run_resnet50": "ResNet-50 (ImageNet-1k)", "run_vit_in21k": "ViT-B/16 (ImageNet-21k)",
         "run_dinov2_vitb14": "DINOv2 ViT-B/14", "run_clip_vitb16": "CLIP ViT-B/16",
-        "run_clip_vitb16_camaug": "CLIP ViT-B/16 + camera aug"}
+        "run_clip_vitb16_camaug": "CLIP ViT-B/16 + camera aug", "run_convnext_small": "ConvNeXt-S (ImageNet-22k)"}
 rows = []
 for r, name in runs.items():
     if not os.path.exists(f"{RES}/{r}/results_summary.csv"):

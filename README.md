@@ -18,9 +18,15 @@ src/
   export_submission.py  checkpoint -> TorchScript -> Codabench zip -> grader-style self-test
 submission/
   run.py, metadata.yaml the code that runs inside Codabench (torch + numpy + Pillow only)
-notebooks/              Kaggle notebooks: 01 data, 02 train, 03 export (they clone this repo)
+notebooks/              Kaggle notebooks (they clone this repo)
+  00_data_exploration   label statistics and visual probing of the three datasets (executed, with notes)
+  01_download_data      downloads the challenge data
+  02_train              trains one backbone, resumable
+  03_export_and_package builds the Codabench zip (single model or ensemble)
+  04_results_analysis   all runs and submissions, per-attribute errors, ensemble, shift, demo (executed, with notes)
 tools/
   push_results.py       copies small result files from Kaggle into results/ and pushes them
+  eval_ensemble.py      scores ensembles and offsets from saved validation logits
   make_notebooks.py     regenerates notebooks/
 results/                metrics, histories, per-attribute tables, curves, logs (pushed from Kaggle)
 report/                 report and slides
@@ -33,12 +39,13 @@ the Kaggle notebook outputs.
 
 | Component | Choice | Why |
 |---|---|---|
-| Backbone | CLIP ViT-B/16 (OpenAI weights), fine-tuned end to end, 256×128 input | Strong generalisation to unseen domains. Foundation models not trained for PAR are allowed by the rules |
+| Backbone | CLIP ViT-B/16 and DINOv2 ViT-B/14, fine-tuned end to end, 256×128 input. Also compared: ResNet-50, ConvNeXt-S, ViT-B/16 (ImageNet-21k) | Broadly pretrained transformers generalised best. Foundation models not trained for PAR are allowed by the rules |
 | Loss | Weighted BCE, w⁺ = e^(1−p), w⁻ = e^p | Class imbalance (e.g. Bald 1%, Adult 96%) |
 | Sampling | Each image ∝ n_dataset^(−0.5) | PA-100K is 81% of training data; the score averages datasets equally |
 | Augmentation | Flip, ±10 px shift, brightness/contrast ±0.2, small random erasing | No hue or saturation changes, because colours are labels |
 | Optimisation | AdamW, layer-wise lr decay 0.65, warmup + cosine, AMP, EMA 0.9995 | Standard ViT fine-tuning recipe |
 | Inference | Flip-averaged logits + per-attribute logit offsets tuned on validation | Grader thresholds at 0.5; offsets move each attribute's cut-off |
+| Final model | CLIP + DINOv2 logits averaged, offsets refitted, +0.5 added to every logit, int8 weight storage | The two models make different mistakes; the models under-predict positives on new cameras; int8 keeps the zip under the size limit |
 
 ## Running it (Kaggle)
 
@@ -54,9 +61,14 @@ the Kaggle notebook outputs.
 ### Pipeline
 | Notebook | Accelerator | Inputs | Produces |
 |---|---|---|---|
+| `00_data_exploration` | None | 01 | tables and plots in `results/data_exploration/` |
 | `01_download_data` | None | none | `upar_data.tar` (all images + annotations) |
 | `02_train` | GPU T4 x2 | 01 (+ a previous 02 version to resume) | `run_<backbone>/` with `best.pth`, `last.pth`, `offsets.json`, results; pushes results to `results/` |
-| `03_export_and_package` | GPU T4 | 01, 02 | `upar_track1_submission.zip` + manifest; pushes the manifest and log |
+| `03_export_and_package` | GPU T4 (or CPU) | 01, 02 | `upar_track1_submission.zip` + manifest; pushes the manifest and log |
+| `04_results_analysis` | None | 01, 02, 03 outputs | tables and plots in `results/results_analysis/` |
+
+ConvNeXt is trained on one GPU (the notebook adds `--single-gpu` for it). With the batch split over
+two GPUs its host memory grew by about 11 GB per 200 steps and each step was about 20 times slower.
 
 Start long runs with **Save Version → Save & Run All**. They run on Kaggle's servers, unaffected
 by your laptop or internet.
@@ -74,15 +86,38 @@ by your laptop or internet.
 
 ## Results
 
-See `results/`. Each training run folder has `history.csv` (per-epoch loss and validation
-metrics), `results_summary.csv` (plain → flip-TTA → tuned offsets), `per_attribute.csv`
-(per-dataset, per-attribute recall/mA/F1) and `curves.png`. *(Numbers are added here once
-the Kaggle runs finish.)*
+Validation (Challenge_Avg, 33,407 images), one training recipe for every backbone:
+
+| Backbone | Pretraining | Plain | Flip + offsets |
+|---|---|---|---|
+| ResNet-50 | ImageNet-1k | 0.812 | 0.826 |
+| ConvNeXt-S | ImageNet-22k | 0.830 | 0.845 |
+| ViT-B/16 | ImageNet-21k | 0.863 | 0.873 |
+| DINOv2 ViT-B/14 | LVD-142M | 0.873 | 0.890 |
+| CLIP ViT-B/16 | 400M image-text pairs | 0.878 | 0.891 |
+| CLIP + DINOv2 ensemble | | 0.880 | 0.895 |
+
+Hidden test set (Codabench, 29,248 images):
+
+| Submission | Score | mA | Inst. F1 |
+|---|---|---|---|
+| CLIP | 0.7766 | 0.7787 | 0.7746 |
+| CLIP refit on train+val | 0.7679 | 0.7656 | 0.7702 |
+| CLIP + camera augmentation | 0.7701 | 0.7719 | 0.7684 |
+| DINOv2 | 0.7733 | 0.7727 | 0.7738 |
+| CLIP + DINOv2 (int8) | 0.7816 | 0.7795 | 0.7836 |
+| **CLIP + DINOv2 + shift 0.5 (final, ID 1005773)** | **0.7833** | **0.7873** | **0.7794** |
+
+The final submission was 35th on the leaderboard on 20 October 2026. Each run folder in `results/` has
+`history.csv`, `results_summary.csv`, `per_attribute.csv`, `offsets.json` and `curves.png`. The
+`submission_*` folders hold the export manifests and logs.
 
 ## References
 - Specker, Cormier, Beyerer. *UPAR: Unified Pedestrian Attribute Recognition and Person Retrieval.* WACV 2023.
 - Cormier et al. *UPAR Challenge 2024: Pedestrian Attribute Recognition and Attribute-Based Person Retrieval.* WACVW 2024.
 - Radford et al. *Learning Transferable Visual Models From Natural Language Supervision (CLIP).* ICML 2021.
+- Oquab et al. *DINOv2: Learning Robust Visual Features without Supervision.* TMLR 2024.
+- Liu et al. *A ConvNet for the 2020s (ConvNeXt).* CVPR 2022.
 - Li, Chen, Huang. *Multi-attribute Learning for Pedestrian Attribute Recognition in Surveillance Scenarios.* ACPR 2015 (weighted BCE).
 - Datasets: PA-100K (Liu et al., ICCV 2017), PETA (Deng et al., ACM MM 2014), Market1501 (Zheng et al., ICCV 2015).
 
