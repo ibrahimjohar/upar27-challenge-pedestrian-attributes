@@ -1,0 +1,7 @@
+.git
+notebooks
+report
+data
+*.pth
+*.zip
+*.tar
