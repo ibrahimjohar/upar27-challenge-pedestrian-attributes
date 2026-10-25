@@ -33,6 +33,8 @@ notebooks/              Kaggle notebooks (they clone this repo)
 tools/
   push_results.py       copies small result files from Kaggle into results/ and pushes them
   eval_ensemble.py      scores ensembles and offsets from saved validation logits
+  fit_ensemble_offsets.py  fits the offsets of the submitted ensemble (+ shift) from validation logits
+  predict.py            runs a submission zip locally on a list or folder of images
   make_notebooks.py     regenerates notebooks/
 results/                metrics, histories, per-attribute tables, curves, logs (pushed from Kaggle)
 report/
@@ -42,8 +44,14 @@ report/
   latex/                      LaTeX sources and figures for the report and the proof
 ```
 
-Weights (`*.pth`), data and submission zips are **not** in git (see `.gitignore`). They live in
-the Kaggle notebook outputs.
+Weights (`*.pth`), validation logits and submission zips are **not** in git (see `.gitignore`).
+They are shared on Google Drive: [upar27-track1-ibrahimjohar-weights](https://drive.google.com/drive/folders/1ngWTymEv7sR6GoepXGi9l5HcezvBE-G5?usp=sharing)
+
+```
+run_clip_vitb16/best.pth, val_logits.npz      CLIP ViT-B/16, best epoch (4)
+run_dinov2_vitb14/best.pth, val_logits.npz    DINOv2 ViT-B/14, best epoch (4)
+submission_1005773/upar_track1_submission.zip the exact zip scored on Codabench (final submission)
+```
 
 ## Method
 
@@ -56,6 +64,59 @@ the Kaggle notebook outputs.
 | Optimisation | AdamW, layer-wise lr decay 0.65, warmup + cosine, AMP, EMA 0.9995 | Standard ViT fine-tuning recipe |
 | Inference | Flip-averaged logits + per-attribute logit offsets tuned on validation | Grader thresholds at 0.5; offsets move each attribute's cut-off |
 | Final model | CLIP + DINOv2 logits averaged, offsets refitted, +0.5 added to every logit, int8 weight storage | The two models make different mistakes; the models under-predict positives on new cameras; int8 keeps the zip under the size limit |
+
+## Reproducing the final submission (Docker)
+
+The image uses torch 2.4.1 with CUDA 12.1, the versions of the Codabench evaluation container.
+
+```bash
+git clone https://github.com/ibrahimjohar/upar27-challenge-pedestrian-attributes.git
+cd upar27-challenge-pedestrian-attributes
+docker build -t upar27-track1 .
+```
+
+Download the folder `upar27-track1-ibrahimjohar-weights` from the Google Drive link above to
+`./weights`. The data comes from the official
+[UPAR-Challenge-2027](https://github.com/speckean/UPAR-Challenge-2027) repository
+(`python download_datasets.py --data-dir ./data`, then copy its `data/annotations` into `./data`),
+so that `./data` holds `Market1501/`, `PA100k/`, `PETA/` and `annotations/`.
+
+Start the container with the data and weights mounted:
+
+```bash
+docker run --gpus all --shm-size 8g -it -v $PWD/data:/data -v $PWD/weights:/weights upar27-track1
+```
+
+**1. Inference with the submitted zip** (the exact file scored on Codabench). `--list` takes any csv
+whose first column holds image paths relative to `--data-root`; with the labelled validation csv
+the challenge metrics are printed as well.
+
+```bash
+python tools/predict.py --submission /weights/submission_1005773/upar_track1_submission.zip \
+    --data-root /data --list /data/annotations/task1/val/gt.csv --out val_predictions.csv
+```
+
+**2. Rebuild the zip from the two checkpoints.** The offsets are fitted on the averaged validation
+logits of both models, plus 0.5 on every attribute. The first command reproduces
+`results/ensemble_clip_dinov2/offsets_shift050.json` exactly.
+
+```bash
+python tools/fit_ensemble_offsets.py /weights/run_clip_vitb16/val_logits.npz \
+    /weights/run_dinov2_vitb14/val_logits.npz --shift 0.5 --out offsets_shift050.json
+python src/export_submission.py --ckpt /weights/run_clip_vitb16/best.pth /weights/run_dinov2_vitb14/best.pth \
+    --offsets offsets_shift050.json --int8 --data-root /data --zip upar_track1_submission.zip
+```
+
+**3. Train both models from scratch** (roughly an hour each on two T4 GPUs). Each run writes
+`best.pth`, `offsets.json`, `val_logits.npz`, `history.csv` and a log to its `--out` folder.
+
+```bash
+python src/train.py --data-root /data --backbone clip_vitb16 --epochs 10 --lr 2e-4 --out runs/run_clip_vitb16
+python src/train.py --data-root /data --backbone dinov2_vitb14 --epochs 6 --lr 1e-4 --out runs/run_dinov2_vitb14
+```
+
+Then run step 2 with `runs/` in place of `/weights/`. Training uses seed 42, but GPU
+non-determinism means a retrained model will differ slightly from the submitted one.
 
 ## Running it (Kaggle)
 
